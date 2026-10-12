@@ -1,5 +1,5 @@
 """The control panel, /config: a Telegram Mini App, served by the relay, where a person sees their
-usage and changes their settings, scheduled jobs and MCP servers with a tap. Taps come in as
+usage and changes their settings, scheduled jobs, MCP servers, plugins and skills with a tap. Taps come in as
 "panel" envelopes, checked against Telegram's signature; the router carries them out and puts
 each person's snapshot on the relay whenever it changes (fingerprint)."""
 import hashlib
@@ -17,9 +17,10 @@ from multiclaude import addons, bot, cronjobs, jsonfile, paths, telegram
 from multiclaude import users as registry
 from multiclaude.channels import TelegramChat
 from multiclaude.log import log
-from multiclaude.router import claude_ui, relay_entrance, switching, usage, work
+from multiclaude.router import claude_ui, plugins, relay_entrance, switching, usage, work
 from multiclaude.router.inbound import Inbound
-from multiclaude.sharing import mcp
+from multiclaude.sharing import inventory, mcp
+from multiclaude.sharing.commands import SKILL_NAME_RE
 from multiclaude.sharing.people import load_person
 
 SIGNED_FOR = 24 * 3600  # Telegram's signature on a panel request is trusted this long
@@ -30,7 +31,9 @@ PUSH_TRIES, PUSH_PAUSE = 3, 5
 DISPLAY_MAX = 40
 MCP_COMMANDS = ("reconnect", "enable", "disable", "login")
 SERVER_NAME_RE = re.compile(r"[\w.:@-]+")
-OFFER = "⚙️ **Control panel**: your settings, scheduled jobs, MCP servers and usage."
+PLUGIN_ID_RE = re.compile(r"[\w.-]+@[\w.-]+")
+SWITCHED = {True: "on", False: "off"}
+OFFER = "⚙️ **Control panel**: your settings, scheduled jobs, MCP servers, plugins and usage."
 SWITCH_SCOPES = {False: " for this session", True: ", also after restarts"}
 MENU_BUTTON = "Panel"  # in place of the ☰ Menu button; the commands still show when you type /
 
@@ -201,7 +204,8 @@ class Panel:
     def act(self, user, action, args):
         """Carry out one request; what to tell the person ("" for nothing). Refused when it can't be."""
         handlers = {"refresh": lambda user, args: "", "setting": self.change_setting, "model": self.switch_model,
-                    "effort": self.switch_effort, "mcp": self.mcp_command, "job": self.job_command}
+                    "effort": self.switch_effort, "mcp": self.mcp_command, "job": self.job_command,
+                    "plugin": self.plugin_command, "skill": self.skill_command}
         if action not in handlers:
             raise Refused(f"The panel asked for {action!r}, which the router doesn't know.")
         return handlers[action](user, args)
@@ -245,6 +249,32 @@ class Panel:
             raise Refused("The panel asked for an MCP command the router doesn't know.")
         self.command(user, f"/mcp {command} {server}")
         return "The sign-in link is coming in the chat." if command == "login" else "Done. The answer comes in the chat."
+
+    def plugin_command(self, user, args):
+        """Like /plugin enable|disable <plugin>@<marketplace>."""
+        command, plugin = args.get("command"), str(args.get("plugin") or "")
+        if command not in ("enable", "disable") or not PLUGIN_ID_RE.fullmatch(plugin):
+            raise Refused("The panel asked for a plugin command the router doesn't know.")
+        self.run_shared_command(user, f"/plugin {command} {plugin}")
+        return f"Turning {plugin.partition('@')[0]} {SWITCHED[command == 'enable']}. {bot.name()} confirms in the chat."
+
+    def skill_command(self, user, args):
+        """Like /skills on|off <name>."""
+        level, skill = args.get("command"), str(args.get("skill") or "")
+        if level not in SWITCHED.values() or not SKILL_NAME_RE.fullmatch(skill):
+            raise Refused("The panel asked for a skill command the router doesn't know.")
+        self.run_shared_command(user, f"/skills {level} {skill}")
+        return f"Turning {skill} {level}. {bot.name()} confirms in the chat."
+
+    def run_shared_command(self, user, text):
+        """Run a /plugin or /skills command as the bot does when it's sent (its reply comes in the
+        chat, and a reload follows), then put their panel on the relay with the result."""
+        user.reply_to = TelegramChat(user.chat_id)
+        self.later(self.after_command, user, text)
+
+    def after_command(self, user, text):
+        plugins.run(user, text)
+        self.update(user)
 
     def job_command(self, user, args):
         command = args.get("command")
@@ -342,10 +372,12 @@ class Panel:
         now = time.time()
         status = usage.snapshot(user) or {}
         checked, servers = self.servers.get(user.name, (None, []))
+        person = load_person(user.name)
         return {"answer": self.answers.get(user.name), "bot": bot.name(), "addons": list(addons.names()),
                 "person": person_part(registry.load_users()[user.name]), "claude": claude_part(user, status),
                 "usage": usage_part(status), "jobs": jobs_part(user, now),
-                "mcp": {"checked": checked, "checking": user.name in self.checking, "servers": servers}}
+                "mcp": {"checked": checked, "checking": user.name in self.checking, "servers": servers},
+                "plugins": inventory.plugins(person), "skills": inventory.skills(person)}
 
     def push(self, user, snapshot):
         """Put a snapshot on the relay, for the page to read. Whether it got there."""

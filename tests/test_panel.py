@@ -184,6 +184,91 @@ def test_an_mcp_tap_runs_the_bots_own_mcp_command(r, desk, panel, monkeypatch):
     assert not last_snapshot(r)["answer"]["ok"]
 
 
+# --- plugins and skills ---
+
+def a_plugin_setup(r):
+    """Alice has a plugin with an MCP server and a skill, a language-server plugin he turned off, and
+    two skills of her own, one turned off; Bob has nothing."""
+    market = r.paths.HOME / "marketplaces" / "tools-market"
+    write_json(market / ".claude-plugin" / "marketplace.json", {"name": "tools-market", "plugins": [
+        {"name": "tools", "source": "./plugins/tools", "description": "Tools for things."},
+        {"name": "pyright-lsp", "source": "./plugins/pyright-lsp", "description": "Python code checking.",
+         "lspServers": {"pyright": {"command": "pyright-langserver"}}}]})
+    write_json(market / "plugins" / "tools" / ".mcp.json", {"mcpServers": {"tools": {"command": "tools-server"}}})
+    write_skill(market / "plugins" / "tools" / "skills" / "tool-skill", "Uses the tools.")
+    (market / "plugins" / "pyright-lsp").mkdir(parents=True)
+    write_json(r.paths.CLAUDE_DIR / "plugins" / "known_marketplaces.json",
+               {"tools-market": {"source": {"source": "directory", "path": str(market)}, "installLocation": str(market)}})
+    write_json(r.paths.workspace_settings("alice"), {
+        "enabledPlugins": {"tools@tools-market": True, "pyright-lsp@tools-market": False,
+                           "telegram@claude-plugins-official": False},
+        "skillOverrides": {"quiet-skill": "off"}})
+    skills = r.paths.workspace("alice") / ".claude" / "skills"
+    write_skill(skills / "my-skill", "Does my thing. Use whenever Alice asks for her thing.")
+    write_skill(skills / "quiet-skill", "Stays quiet.")
+
+
+def write_skill(folder, description):
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text(f"---\nname: {folder.name}\ndescription: {description}\n---\n\n# {folder.name}\n")
+
+
+def test_the_panel_lists_plugins_with_what_they_bring_and_skills_on_or_off(r, panel):
+    a_plugin_setup(r)
+    tap(panel, "refresh")
+
+    snapshot = last_snapshot(r)
+    assert snapshot["plugins"] == [
+        {"id": "pyright-lsp@tools-market", "name": "pyright-lsp", "marketplace": "tools-market", "on": False,
+         "shared": False, "description": "Python code checking.", "servers": [], "skills": [], "code": ["pyright"]},
+        {"id": "tools@tools-market", "name": "tools", "marketplace": "tools-market", "on": True, "shared": False,
+         "description": "Tools for things.", "servers": ["tools"], "skills": ["tool-skill"], "code": []}]
+    assert snapshot["skills"] == [
+        {"name": "my-skill", "on": True, "shared": False, "description": "Does my thing."},
+        {"name": "quiet-skill", "on": False, "shared": False, "description": "Stays quiet."}]
+
+
+def test_a_plugin_switch_runs_the_bots_own_plugin_command_then_puts_the_panel_again(r, panel, monkeypatch):
+    commands = []
+    monkeypatch.setattr(r.plugins, "run", lambda user, text: commands.append((user.name, text)))
+    tap(panel, "plugin", command="disable", plugin="tools@tools-market")
+
+    assert commands == [("alice", "/plugin disable tools@tools-market")]
+    assert last_snapshot(r)["answer"]["text"] == "Turning tools off. Claude confirms in the chat."
+
+
+def test_a_skill_switch_runs_the_bots_own_skills_command(r, panel, monkeypatch):
+    commands = []
+    monkeypatch.setattr(r.plugins, "run", lambda user, text: commands.append((user.name, text)))
+    tap(panel, "skill", command="on", skill="quiet-skill")
+    assert commands == [("alice", "/skills on quiet-skill")]
+
+
+@pytest.mark.parametrize("action, args", [
+    ("plugin", {"command": "uninstall", "plugin": "tools@tools-market"}),
+    ("plugin", {"command": "disable", "plugin": "tools; rm -rf ~"}),
+    ("skill", {"command": "name-only", "skill": "my-skill"}),
+    ("skill", {"command": "off", "skill": "../other"}),
+])
+def test_a_plugin_or_skill_switch_the_bot_doesnt_know_is_refused(r, panel, monkeypatch, action, args):
+    commands = []
+    monkeypatch.setattr(r.plugins, "run", lambda user, text: commands.append(text))
+    tap(panel, action, **args)
+    assert commands == []
+    assert not last_snapshot(r)["answer"]["ok"]
+
+
+@pytest.mark.parametrize("front_matter, expected", [
+    ('description: "Quoted. Use when asked."', "Quoted."),
+    ("description: >\n  Folded over\n  two lines.\nname: x", "Folded over two lines."),
+    ("description: " + "word " * 80, ("word " * 59).strip() + " word…"),
+])
+def test_a_skills_description_is_what_it_does_kept_short(r, panel, front_matter, expected):
+    from multiclaude.sharing import inventory
+    assert inventory.shortened(inventory.WHEN_TO_USE_RE.sub("", inventory.frontmatter_value(
+        f"---\n{front_matter}\n---\nbody", "description"))) == expected
+
+
 def test_pausing_a_job_comments_out_its_lines_and_resuming_puts_them_back(r, panel):
     job = r.cronjobs.jobs("alice", CRONTAB)[0]
 

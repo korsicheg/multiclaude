@@ -18,7 +18,7 @@ COMMANDS = [
     {"command": "plugin", "description": "Plugins and marketplaces: /plugin install name@marketplace"},
     {"command": "skills", "description": "List skills, or /skills off name"},
     {"command": "mcp", "description": "Your MCP servers: /mcp add, /mcp login name"},
-    {"command": "config", "description": "Control panel: settings, scheduled jobs, MCP servers, usage"},
+    {"command": "config", "description": "Control panel: settings, scheduled jobs, MCP servers, plugins, skills, usage"},
     {"command": "help", "description": "What you can send me, the commands, what I can do with your MCPs"},
 ]
 # What reaches the assistant from Telegram (router/inbound.py); add-ins add what they bring, and

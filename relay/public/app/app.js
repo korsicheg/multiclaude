@@ -9,6 +9,7 @@ const tg = window.Telegram?.WebApp;
 const ANSWER_WITHIN = 45000;     // ms before saying the VM hasn't answered a tap
 const FOLLOW_FOR = 2 * 60e3;     // ms after a tap the page keeps reading changes: a switch, a server check
 const SWITCH_WITHIN = 10 * 60e3; // ms a model or effort switch shows as asked for, while the assistant finishes its turn
+const TURN_WITHIN = 2 * 60e3;    // ms a plugin or skill switch shows as asked for, while its command runs
 const SERVERS_FRESH = 10 * 60;   // s: older server checks are done again when the panel opens
 const TOAST_FOR = 3500;
 const DISPLAY_MAX = 40;
@@ -25,6 +26,9 @@ let version = 0;             // the relay's version of that snapshot
 let keep = storedKeep();     // the Keep after restarts switch
 const waiting = new Map();   // tap id -> {action, args, since}, oldest first: taps the VM hasn't answered
 const switching = {};        // "model" | "effort" -> {target, since}: asked for, not in effect yet
+const turning = {};          // "plugin:<id>" | "skill:<name>" -> {on, since}: asked for, not in the snapshot yet
+const opened = new Set();    // the plugins and skills shown opened, kept as the list is drawn again
+let extensionsTab = "plugins";
 let followUntil = 0;         // keep reading changes until then
 let following = false;
 let toastTimer = null;
@@ -111,7 +115,8 @@ async function follow() {
   if (following) return;
   following = true;
   try {
-    while (Date.now() < followUntil && (waiting.size || Object.keys(switching).length || snapshot?.mcp?.checking)) {
+    while (Date.now() < followUntil
+      && (waiting.size || Object.keys(switching).length || Object.keys(turning).length || snapshot?.mcp?.checking)) {
       await read(version || 1);  // before any snapshot, 1 waits for the first
     }
   } catch (error) {
@@ -175,6 +180,7 @@ function render() {
   section("usage", "Usage", usageRows(), "");
   section("jobs", "Scheduled jobs", jobRows(), jobsNote());
   section("mcp", "MCP servers", serverRows(), serversNote());
+  section("extensions", "Plugins & skills", extensionRows(), extensionsNote());
   section("profile", "Profile", profileRows(), profileNote());
   if (addonOn("quiet-hours")) section("quiet", "Quiet hours", quietRows(), quietNote());
   else document.getElementById("quiet")?.remove();
@@ -359,6 +365,100 @@ function serverMenu(server) {
 
 function shortName(name) {
   return name.replace(/^plugin:[^:]+:/, "");
+}
+
+/* --- plugins and skills: one list at a time, each switch the bot's own /plugin or /skills command --- */
+
+function extensionRows() {
+  const tabs = el("div", { className: "row tabs" }, segmented(["plugins", "skills"], extensionsTab, chooseTab, tabLabel));
+  const items = snapshot[extensionsTab] ?? [];
+  if (!items.length) {
+    return [tabs, noteRow(extensionsTab === "plugins" ? "None yet. Add one in the chat with /plugin install."
+      : `None of your own yet. Ask ${botName()} to write one.`)];
+  }
+  return [tabs, ...items.map(extensionsTab === "plugins" ? pluginRow : skillRow)];
+}
+
+function chooseTab(tab) {
+  extensionsTab = tab;
+  tg.HapticFeedback?.selectionChanged();
+  render();
+}
+
+function tabLabel(tab) {
+  return `${tab === "plugins" ? "Plugins" : "Skills"} · ${(snapshot[tab] ?? []).length}`;
+}
+
+function pluginRow(plugin) {
+  const key = `plugin:${plugin.id}`;
+  return extensionRow({
+    key, name: plugin.name, chips: pluginTags(plugin), details: [plugin.description, brings(plugin)],
+    on: shownTurn(key, plugin.on),
+    change: (on) => turn(key, on, "plugin", { command: on ? "enable" : "disable", plugin: plugin.id }),
+  });
+}
+
+function skillRow(skill) {
+  const key = `skill:${skill.name}`;
+  return extensionRow({
+    key, name: skill.name, chips: skill.shared ? ["shared"] : [], details: [skill.description],
+    on: shownTurn(key, skill.on),
+    change: (on) => turn(key, on, "skill", { command: on ? "on" : "off", skill: skill.name }),
+  });
+}
+
+/* A name with its tags, opened with a tap when there's more to say, and its switch. */
+function extensionRow({ key, name, chips, details, on, change }) {
+  const title = el("span", {}, name, ...chips.map((chip) => el("span", { className: "chip" }, chip)));
+  const lines = details.filter(Boolean);
+  const body = lines.length
+    ? el("details", { className: "job", open: opened.has(key), ontoggle: (event) => remember(key, event.target.open) },
+      el("summary", {}, title), ...lines.map((line) => el("p", { className: "detail" }, line)))
+    : el("span", { className: "label" }, title);
+  return el("div", { className: "row" }, body, toggle(on, change));
+}
+
+function remember(key, open) {
+  if (open) opened.add(key);
+  else opened.delete(key);
+}
+
+function pluginTags(plugin) {
+  return [plugin.servers.length && "tools", plugin.skills.length && "skills", plugin.code.length && "code",
+    plugin.shared && "shared"].filter(Boolean);
+}
+
+/* "From acme-plugins · MCP server weather": where it comes from and what it brings. */
+function brings(plugin) {
+  const parts = [`From ${plugin.marketplace}`];
+  if (plugin.servers.length) parts.push(named(plugin.servers, "MCP server"));
+  if (plugin.skills.length) parts.push(plugin.skills.length > 3 ? `${plugin.skills.length} skills` : named(plugin.skills, "skill"));
+  if (plugin.code.length) parts.push(`code checking (${plugin.code.join(", ")})`);
+  if (plugin.shared) parts.push("shared with everyone");
+  return parts.join(" · ");
+}
+
+function named(names, noun) {
+  return `${noun}${names.length === 1 ? "" : "s"} ${names.join(", ")}`;
+}
+
+function turn(key, on, action, args) {
+  turning[key] = { on, since: Date.now() };
+  tap(action, args);
+}
+
+/* A plugin or skill switch shows as asked for until the snapshot has it: the command takes a few seconds. */
+function shownTurn(key, actual) {
+  const asked = turning[key];
+  if (asked && (asked.on === actual || Date.now() - asked.since > TURN_WITHIN)) delete turning[key];
+  return turning[key]?.on ?? actual;
+}
+
+function extensionsNote() {
+  if (Object.keys(turning).length) return `${capitalized(botName())} confirms in the chat, then reloads its plugins and skills once it's idle.`;
+  return extensionsTab === "plugins"
+    ? "Tap one for what it does. The switch works like /plugin enable and /plugin disable. Install and update in the chat with /plugin."
+    : "Your own skills and the shared ones; a plugin's skills come with it. The switch works like /skills on and /skills off.";
 }
 
 function profileRows() {
