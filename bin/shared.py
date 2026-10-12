@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Plugins, skills and marketplaces shared by everyone's assistants; see
 lib/multiclaude/sharing for how. Cron runs `sync` every 10 minutes, assistants run it after
-installing something, and the router runs `command` for /plugin, /skills and /mcp.
+installing something, `assistant add-user` before a new person's session starts, and the
+router runs `command` for /plugin, /skills and /mcp.
 
-Usage: shared.py sync [--dry-run] | list | command <name> </plugin, /skills or /mcp text>
+Usage: shared.py sync [--dry-run] [--wait] | list | command <name> </plugin, /skills or /mcp text>
+
+sync --wait waits for a sync that is already running (up to 5 minutes) instead of skipping.
 """
 import json
 import sys
@@ -16,6 +19,8 @@ from multiclaude.log import log  # noqa: E402
 from multiclaude.sharing import commands, listing  # noqa: E402
 from multiclaude.sharing.sync import Sync  # noqa: E402
 
+SYNC_WAIT = 300  # seconds `sync --wait` waits for a running sync
+
 
 def main(args):
     cmd = args[0] if args else "help"
@@ -23,7 +28,7 @@ def main(args):
         listing.show()
     elif cmd == "sync":
         try:
-            with jsonfile.locked(paths.SETTINGS_LOCK, wait=0):
+            with jsonfile.locked(paths.SETTINGS_LOCK, wait=SYNC_WAIT if "--wait" in args[1:] else 0):
                 Sync(dry_run="--dry-run" in args[1:]).run()
         except TimeoutError:
             log("another sync is running")

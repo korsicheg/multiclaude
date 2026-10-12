@@ -190,7 +190,7 @@ assistant start-users           # start any person's assistant that isn't runnin
 assistant notify [--user <name>] "text"         # a Telegram message to one person (default: the owner)
 assistant job [--user <name>] "instructions"    # a one-shot task whose answer goes to that person
 assistant shared list           # plugins, skills and marketplaces: shared and per person
-assistant shared sync [--dry-run]
+assistant shared sync [--dry-run] [--wait]
 assistant relay deploy          # deploy the relay: the control panel, and the add-ins' routes
 assistant addon list|enable|disable
 ```
@@ -199,7 +199,7 @@ assistant addon list|enable|disable
 
 - **Logs:** the router logs to `journalctl -u assistant-watcher`. Jobs log to `~/assistant/logs/jobs.log` (errors in `jobs.err`), the shared sync to `logs/shared.log`.
 - **Scheduled jobs:** each assistant adds its own cron lines (`assistant job --user <name> "…"`), each under a `# <name>:` comment and listed in that person's `~/workspaces/<name>/jobs.md`. `assistant job` runs `claude -p` in the person's folder, at most one run of the same job at a time and for up to an hour, and sends its final answer unless that is exactly `NOTHING`, which makes "only tell me if…" jobs possible.
-- **Plugins, skills and marketplaces:** each assistant installs them only in its person's own `~/workspaces/<name>/.claude/`. Once everyone has the same one, `assistant shared sync` moves it to `~/.claude` and deletes the copies. If someone turns a shared one off for themselves, it moves back into everyone else's folder. The owner gets a message for each move.
+- **Plugins, skills and marketplaces:** each assistant installs them only in its person's own `~/workspaces/<name>/.claude/`. Once everyone has the same one, `assistant shared sync` moves it to `~/.claude` and deletes the copies. If someone turns a shared one off for themselves, it moves back into everyone else's folder. When you add a person, everything shared moves back into the folders of the people who had it, so the newcomer starts with none of it. The owner gets a message for each move.
 
 ## What's not in this repo
 

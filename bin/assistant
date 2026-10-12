@@ -289,6 +289,10 @@ cmd_add_user() {
   mkdir -p "$ws"
   [ -f "$ws/CLAUDE.md" ] || render_claude_md "$name" "$ws"
   [ -f "$ws/jobs.md" ] || printf '# Scheduled jobs for %s\n\nKept in sync with the `# %s:` lines in `crontab -l`. Cron runs in UTC.\n\nNo jobs yet.\n' "$display" "$name" > "$ws/jobs.md"
+  # Before a newcomer's session starts, what's shared goes back to the people who had it.
+  mkdir -p "$ROOT/logs"
+  python3 -I "$ROOT/bin/shared.py" sync --wait >> "$ROOT/logs/shared.log" 2>&1 ||
+    echo "Warning: the shared sync failed; see $ROOT/logs/shared.log" >&2
   cmd_start_users
   echo "Added $display ($name, Telegram id $id): workspace $ws, terminal: assistant attach $name"
 }
@@ -607,10 +611,11 @@ assistant reload-plugins [--user <name>]
                                 once it's idle (after it installed or updated a plugin or skill)
 assistant notify [--user <name>] "<msg>"
                                 Send a Telegram message to one user (default: the owner)
-assistant shared sync [--dry-run]
+assistant shared sync [--dry-run] [--wait]
                                 Move plugins, skills and marketplaces that every user has
-                                into ~/.claude, and back out when someone turns one off
-                                (cron runs it every 10 minutes)
+                                into ~/.claude, and back out when someone turns one off or
+                                someone new joins (cron runs it every 10 minutes; --wait
+                                waits for a sync already running instead of skipping)
 assistant shared list           What's shared and what each user has in their own folder
 assistant relay deploy          Deploy the relay (the control panel, and the routes of the add-ins
                                 that are on) to Cloudflare and point the router at it

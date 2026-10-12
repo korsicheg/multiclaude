@@ -1,5 +1,5 @@
-"""The sync: move what everyone has up to ~/.claude, and back down when someone turns it off.
-See the package docstring for the rules."""
+"""The sync: move what everyone has up to ~/.claude, and back down when someone turns it off
+or someone new joins. See the package docstring for the rules."""
 import os
 import shutil
 import subprocess
@@ -21,9 +21,10 @@ NOTIFY_TIMEOUT = 60
 
 
 class Manifest:
-    """state/shared.json: what the sync moved to ~/.claude, what was there before its first run
-    (the baseline), and the strays already reported. Saved after every move, so a run that dies
-    midway leaves nothing in ~/.claude it doesn't know about."""
+    """state/shared.json: what the sync moved to ~/.claude, the people who had it (so the next
+    run can tell who is new), what was there before its first run (the baseline), and the strays
+    already reported. Saved after every move, so a run that dies midway leaves nothing in
+    ~/.claude it doesn't know about."""
 
     def __init__(self, dry_run):
         self.dry_run = dry_run
@@ -56,6 +57,9 @@ class Sync:
         self.user = jsonfile.read_object(paths.USER_SETTINGS)
         self.known = self.user.get("extraKnownMarketplaces") or {}  # the marketplaces ~/.claude declares
         self.dedupe = set(self.manifest.shared["marketplaces"])      # marketplaces whose per-person copies go
+        # People registered since the last run. Before any run noted who was here, nobody is new.
+        had = self.manifest.data.get("people")
+        self.newcomers = [p for p in self.people if had is not None and p.name not in had]
         self.up, self.down = [], []
 
     def run(self):
@@ -63,18 +67,22 @@ class Sync:
             return
         self.check_workspaces()
         self.empty_old_trash()
-        # 1. A shared item someone turned off for themselves goes back to everyone else.
+        # 1. Shared items go back into the folders of the people who had them: all of them when
+        # someone new joined, so newcomers start with nothing shared, else the ones someone
+        # turned off for themselves (which go back to everyone else).
         self.return_plugins()
         self.return_skills()
-        # 2. What everyone has moves up. Marketplaces are declared first, since a shared plugin
-        # needs its marketplace at user scope; the per-person declarations go last, after the
-        # plugins that came from them.
-        self.share_marketplaces()
-        self.share_plugins()
-        self.prune_plugin_copies()
-        self.prune_marketplace_copies()
-        self.share_skills()
-        self.prune_skill_copies()
+        self.return_marketplaces()
+        if self.note_people():
+            # 2. What everyone has moves up. Marketplaces are declared first, since a shared plugin
+            # needs its marketplace at user scope; the per-person declarations go last, after the
+            # plugins that came from them.
+            self.share_marketplaces()
+            self.share_plugins()
+            self.prune_plugin_copies()
+            self.prune_marketplace_copies()
+            self.share_skills()
+            self.prune_skill_copies()
         # 3. The front desk never loads shared plugins.
         self.hide_plugins_from_front_desk()
         # 4. Anything else new in ~/.claude was installed there directly.
@@ -112,14 +120,26 @@ class Sync:
             if not self.dry_run:
                 shutil.rmtree(d, ignore_errors=True)
 
+    def why_back(self, off):
+        """Why a shared item goes back to the people who had it, or None while it stays shared."""
+        if self.newcomers:
+            return f"{displays(self.newcomers)} joined"
+        return f"{displays(off)} turned it off" if off else None
+
+    def keeping(self, off):
+        """Who gets a shared item back in their own folder: everyone who had it and didn't turn it off."""
+        return [p for p in self.people if p not in off and p not in self.newcomers]
+
     def return_plugins(self):
         for pid in sorted(self.manifest.shared["plugins"]):
             off = [p for p in self.people if p.plugins.get(pid) is False]
-            if not off:
+            why = self.why_back(off)
+            if not why:
                 continue
-            self.log(f"plugin {pid}: turned off by {names(off)}; moving it back to the others")
+            keep = self.keeping(off)
+            self.log(f"plugin {pid}: {why}; moving it back to {names(keep) or 'nobody'}")
             if not all(self.claude(["plugin", "install", pid, "--scope", "project"], p.ws)
-                       for p in self.people if p not in off and p.ws.is_dir()):
+                       for p in keep if p.ws.is_dir()):
                 self.log(f"plugin {pid}: couldn't install it for everyone; leaving it shared for now")
                 continue
             if (self.user.get("enabledPlugins") or {}).get(pid) is True and not self.claude(
@@ -130,25 +150,59 @@ class Sync:
                     self.edit(p.files[scope], drop_key("enabledPlugins", pid))
             self.edit(FRONT_DESK, drop_key("enabledPlugins", pid))
             self.manifest.discard("plugins", pid)
-            self.down.append(f"plugin {pid} ({displays(off)} turned it off)")
+            self.down.append(f"plugin {pid} ({why})")
 
     def return_skills(self):
         for name in sorted(self.manifest.shared["skills"]):
             off = [p for p in self.people if p.merged("skillOverrides").get(name) == "off"]
-            if not off:
+            why = self.why_back(off)
+            if not why:
                 continue
-            self.log(f"skill {name}: turned off by {names(off)}; moving it back to the others")
+            keep = self.keeping(off)
+            self.log(f"skill {name}: {why}; moving it back to {names(keep) or 'nobody'}")
             src = USER_SKILLS / name
             if not self.dry_run and src.is_dir():
-                for p in self.people:
-                    if p not in off and p.ws.is_dir() and not (p.skills_dir / name).exists():
+                for p in keep:
+                    if p.ws.is_dir() and not (p.skills_dir / name).exists():
                         skillfiles.copy_skill(src, p.skills_dir / name)
                 skillfiles.to_trash(src, name)
             for p in off:
                 for scope in p.scopes_with("skillOverrides", name):
                     self.edit(p.files[scope], drop_key("skillOverrides", name))
             self.manifest.discard("skills", name)
-            self.down.append(f"skill {name} ({displays(off)} turned it off)")
+            self.down.append(f"skill {name} ({why})")
+
+    def return_marketplaces(self):
+        """Shared marketplaces go back only when someone new joins, each once none of its plugins
+        is shared any more: a shared plugin needs its marketplace at user scope."""
+        if not self.newcomers:
+            return
+        why, keep = self.why_back([]), self.keeping([])
+        for name in sorted(self.manifest.shared["marketplaces"]):
+            if any(pid.rpartition("@")[2] == name for pid in self.manifest.shared["plugins"]):
+                continue
+            self.log(f"marketplace {name}: {why}; moving it back to {names(keep) or 'nobody'}")
+            declared = (self.user.get("extraKnownMarketplaces") or {}).get(name)
+            if isinstance(declared, dict) and "source" in declared:
+                for p in keep:
+                    if p.ws.is_dir() and name not in p.marketplaces:
+                        self.edit(p.files["project"], set_key("extraKnownMarketplaces", name, {"source": declared["source"]}))
+            self.edit(paths.USER_SETTINGS, drop_key("extraKnownMarketplaces", name))
+            self.known = {k: v for k, v in self.known.items() if k != name}
+            self.dedupe.discard(name)
+            self.manifest.discard("marketplaces", name)
+            self.down.append(f"marketplace {name} ({why})")
+
+    def note_people(self):
+        """Note who has what's shared, once everything a newcomer shouldn't get has gone back.
+        False while some of it is still shared (an install failed): nothing new is shared then,
+        and the next run tries again."""
+        if self.newcomers and any(self.manifest.shared.values()):
+            self.log(f"{names(self.newcomers)} joined, but not everything shared could go back yet; "
+                     "sharing nothing new until it has")
+            return False
+        self.manifest.save(people=sorted(p.name for p in self.people))
+        return True
 
     def share_marketplaces(self):
         for name, source in sorted(everyone_has(self.people, lambda p: p.marketplaces).items()):

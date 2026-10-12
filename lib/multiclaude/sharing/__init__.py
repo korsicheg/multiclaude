@@ -9,11 +9,14 @@ deletes the per-person copies:
   marketplace  declared in everyone's settings with the same source
   skill        a folder in everyone's .claude/skills with identical files
 
-When someone turns a shared item off for themselves (the plugin set to false, or the skill
-set to "off" in skillOverrides, in their workspace settings), it moves back into everyone
-else's workspace. Shared marketplaces stay shared.
+When someone new is registered, everything shared moves back into the workspaces of the
+people who had it, marketplaces included, so a newcomer starts with nothing shared; it moves
+up again once they have it too. When someone turns a shared item off for themselves (the
+plugin set to false, or the skill set to "off" in skillOverrides, in their workspace
+settings), it moves back into everyone else's workspace, and its marketplace stays shared.
 
-Only items a sync moved up are changed in ~/.claude; state/shared.json lists them. Anything
+Only items a sync moved up are changed in ~/.claude; state/shared.json lists them, and the
+people who had them, which is how a run tells who is new. Anything
 else that appears in ~/.claude is reported to the owner once, since assistants should never
 install there directly. The front desk gets every shared plugin switched off in
 ~/assistant/.claude/settings.local.json.

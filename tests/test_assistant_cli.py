@@ -188,6 +188,23 @@ def test_reload_plugins_refuses_an_unknown_user(home):
     assert not (home.root / "state" / "reload-requests" / "nobody").exists()
 
 
+def test_add_user_gives_whats_shared_back_before_the_newcomers_session_starts(home):
+    foo = "foo@claude-plugins-official"
+    (home.root / "state").mkdir()
+    (home.root / "state" / "shared.json").write_text(json.dumps(
+        {"plugins": [foo], "marketplaces": [], "skills": [], "people": ["alice"]}))
+    (home.home / ".claude" / "settings.json").write_text(json.dumps({"enabledPlugins": {foo: True}}))
+
+    r = home.run("add-user", "bob", "555", "Bob")
+
+    assert r.returncode == 0, r.stderr
+    assert home.fake.argvs()[:2] == [["plugin", "install", foo, "--scope", "project"],
+                                     ["plugin", "uninstall", foo, "--scope", "user", "--keep-data"]]
+    assert home.fake.calls[0]["cwd"].endswith("/workspaces/alice")
+    assert json.loads((home.root / "state" / "shared.json").read_text())["people"] == ["alice", "bob"]
+    assert home.sent() == [f"🔽 Back in each person's own folder:\n- plugin {foo} (Bob joined)"]
+
+
 def test_notify_succeeds_when_tg_holds_the_message_for_later(home, monkeypatch):
     import socket
     monkeypatch.setenv("TG_CONNECT_WITHIN", "1")

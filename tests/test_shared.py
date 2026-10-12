@@ -193,6 +193,98 @@ def test_sync_moves_a_skill_back_when_someone_turns_it_off(box):
     assert box.manifest()["skills"] == []
 
 
+# --- sync: someone new joins -------------------------------------------------------------------
+
+def shared_before(box, people, plugins=(), marketplaces=(), skills=()):
+    """What an earlier sync moved to ~/.claude, among these people."""
+    write_json(box.root / "state" / "shared.json", {"plugins": list(plugins), "marketplaces": list(marketplaces),
+                                                    "skills": list(skills), "people": list(people)})
+
+
+def test_sync_gives_everything_shared_back_to_the_people_who_had_it_when_someone_joins(box):
+    box.users("alice", "bob", "carol")
+    shared_before(box, ["alice", "bob"], plugins=["bar@market"], marketplaces=["market"], skills=["notes"])
+    write_json(box.config / "settings.json", {"enabledPlugins": {"bar@market": True},
+                                              "extraKnownMarketplaces": {"market": {**MARKET, "autoUpdate": True}}})
+    box.skill(box.config / "skills", "notes")
+
+    _, _, err = box.shared("sync")
+
+    assert box.fake.argvs() == [
+        ["plugin", "install", "bar@market", "--scope", "project"],
+        ["plugin", "install", "bar@market", "--scope", "project"],
+        ["plugin", "uninstall", "bar@market", "--scope", "user", "--keep-data"],
+    ]
+    assert [c["cwd"].rsplit("/", 1)[1] for c in box.fake.calls[:2]] == ["alice", "bob"]
+    for name in ("alice", "bob"):
+        assert read_json(box.ws_settings(name)) == {"extraKnownMarketplaces": {"market": MARKET}}
+        assert (box.person_skills(name) / "notes" / "SKILL.md").is_file()
+    assert not box.ws_settings("carol").exists()
+    assert not (box.person_skills("carol") / "notes").exists()
+    assert read_json(box.config / "settings.json")["extraKnownMarketplaces"] == {}
+    assert not (box.config / "skills" / "notes").exists()
+    manifest = box.manifest()
+    assert (manifest["plugins"], manifest["marketplaces"], manifest["skills"]) == ([], [], [])
+    assert manifest["people"] == ["alice", "bob", "carol"]
+    assert "plugin bar@market (Carol joined)" in err
+
+
+def test_sync_gives_nothing_back_to_someone_who_turned_it_off_when_someone_joins(box):
+    box.users("alice", "bob", "carol")
+    shared_before(box, ["alice", "bob"], plugins=[FOO])
+    write_json(box.config / "settings.json", {"enabledPlugins": {FOO: True}})
+    box.settings("alice", {"enabledPlugins": {FOO: False}})
+
+    box.shared("sync")
+
+    assert box.fake.argvs() == [
+        ["plugin", "install", FOO, "--scope", "project"],
+        ["plugin", "uninstall", FOO, "--scope", "user", "--keep-data"],
+    ]
+    assert box.fake.calls[0]["cwd"].endswith("/workspaces/bob")
+    assert read_json(box.ws_settings("alice")) == {"enabledPlugins": {}}
+
+
+def test_sync_shares_nothing_new_until_everything_went_back(box):
+    box.users("alice", "bob")
+    shared_before(box, ["alice"], plugins=[FOO])
+    write_json(box.config / "settings.json", {"enabledPlugins": {FOO: True}})
+    for name in ("alice", "bob"):
+        box.skill(box.person_skills(name), "notes")
+    box.fake.on(["plugin", "install"], rc=1)
+
+    _, _, err = box.shared("sync")
+
+    assert "sharing nothing new until it has" in err
+    assert not (box.config / "skills" / "notes").exists()
+    assert box.manifest()["plugins"] == [FOO]
+    assert box.manifest()["people"] == ["alice"]  # so the next run tries again
+
+
+def test_sync_first_notes_who_is_there_without_moving_anything(box):
+    box.users("alice", "bob")
+    write_json(box.root / "state" / "shared.json", {"plugins": [FOO], "marketplaces": [], "skills": []})
+    write_json(box.config / "settings.json", {"enabledPlugins": {FOO: True}})
+
+    box.shared("sync")
+
+    assert box.fake.argvs() == []
+    assert box.manifest()["plugins"] == [FOO]
+    assert box.manifest()["people"] == ["alice", "bob"]
+
+
+def test_sync_moves_nothing_when_someone_leaves(box):
+    box.users("alice")
+    shared_before(box, ["alice", "bob"], plugins=[FOO])
+    write_json(box.config / "settings.json", {"enabledPlugins": {FOO: True}})
+
+    box.shared("sync")
+
+    assert box.fake.argvs() == []
+    assert box.manifest()["plugins"] == [FOO]
+    assert box.manifest()["people"] == ["alice"]
+
+
 # --- sync: strays ------------------------------------------------------------------------------
 
 def test_sync_reports_something_installed_straight_into_user_scope_once(box):
