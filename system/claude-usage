@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Fetch Claude plan usage with a dedicated OAuth login (kept apart from ~/.claude).
+#   claude-usage            print fresh usage JSON
+#   claude-usage --cache    fetch and write ~/.cache/claude-usage/usage.json (for the status line)
+# Credentials: ~/.config/claude-usage/credentials.json (the claudeAiOauth object:
+#   accessToken, refreshToken, expiresAt[ms]), refreshed automatically.
+# Tokens never go on a command line, where any process could read them: jq reads them from
+# the credentials file, and curl gets headers and bodies through pipes.
+set -uo pipefail
+cfg="${XDG_CONFIG_HOME:-$HOME/.config}/claude-usage"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/claude-usage"
+creds="$cfg/credentials.json"
+mkdir -p "$cache"; chmod 700 "$cfg" "$cache" 2>/dev/null
+CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+TOKEN_URL="${CLAUDE_USAGE_TOKEN_URL:-https://platform.claude.com/v1/oauth/token}"  # overridable for tests
+USAGE_URL="${CLAUDE_USAGE_URL:-https://api.anthropic.com/api/oauth/usage}"
+REDIRECT_URI="https://platform.claude.com/oauth/code/callback"
+REFRESH_BEFORE=300   # seconds before expiry
+# The token endpoint answers 429 to curl's default User-Agent.
+USER_AGENT='claude-cli/2.1.294 (external, cli)'
+http() { curl -sS --noproxy '*' --max-time 15 -A "$USER_AGENT" "$@"; }
+post_json() { http -X POST "$1" -H 'Content-Type: application/json' -d @-; }  # body on stdin
+
+refresh() {   # exchange refresh token; rewrite creds atomically
+  local resp
+  jq -e '.refreshToken' "$creds" >/dev/null 2>&1 || return 1
+  resp=$(jq --arg id "$CLIENT_ID" '{grant_type:"refresh_token", refresh_token:.refreshToken, client_id:$id}' "$creds" |
+         post_json "$TOKEN_URL") || return 1
+  jq -e '.access_token' >/dev/null 2>&1 <<<"$resp" || { echo "refresh failed: $(jq -r '.error_description // .error // "bad response"' <<<"$resp" 2>/dev/null)" >&2; return 1; }
+  umask 077
+  jq --argjson r "$resp" '.accessToken=$r.access_token | .refreshToken=($r.refresh_token // .refreshToken)
+      | .expiresAt=((now + ($r.expires_in // 3600)) * 1000 | floor)' "$creds" > "$creds.tmp" \
+    && mv -f "$creds.tmp" "$creds"
+}
+
+fetch() {     # sets the response's HTTP code in $code and its body in $body
+  local out
+  out=$(http -w '\n%{http_code}' -H @<(jq -r '"Authorization: Bearer \(.accessToken)"' "$creds") \
+          -H 'anthropic-beta: oauth-2025-04-20' "$USAGE_URL") || return 1
+  code=${out##*$'\n'}; body=${out%$'\n'*}
+}
+
+main() {
+  [ -f "$creds" ] || { echo "no credentials in $cfg; run: claude-usage login" >&2; return 1; }
+  local expires
+  expires=$(jq -r '.expiresAt // 0' "$creds")
+  [ $(( expires / 1000 - $(date +%s) )) -lt "$REFRESH_BEFORE" ] && refresh
+  code=; body=
+  fetch || return 1
+  if [ "$code" = 401 ] && refresh; then fetch || return 1; fi
+  [ "$code" = 200 ] || { echo "usage fetch failed: HTTP $code $body" >&2; return 1; }
+  printf '%s\n' "$body"
+}
+
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+
+# Two-step PKCE login asking only for user:profile (reads usage; no inference).
+#   claude-usage login          print the URL to open; verifier stays on this machine
+#   claude-usage login CODE     exchange the code shown after approving
+login() {
+  local pending="$cfg/pending.json"
+  mkdir -p "$cfg"; chmod 700 "$cfg"; umask 077
+  if [ -z "${1:-}" ]; then
+    local v s c
+    v=$(openssl rand 32 | b64url); s=$(openssl rand 32 | b64url)
+    c=$(printf '%s' "$v" | openssl dgst -sha256 -binary | b64url)
+    jq -n --arg v "$v" --arg s "$s" '{verifier:$v,state:$s}' > "$pending"
+    printf 'Open this URL, approve, then run: claude-usage login <code>\n\n'
+    printf 'https://claude.com/cai/oauth/authorize?code=true&client_id=%s&response_type=code&redirect_uri=%s&scope=user%%3Aprofile&code_challenge=%s&code_challenge_method=S256&state=%s\n' \
+      "$CLIENT_ID" "$(jq -rn --arg u "$REDIRECT_URI" '$u | @uri')" "$c" "$s"
+    return
+  fi
+  [ -f "$pending" ] || { echo "run 'claude-usage login' first" >&2; return 1; }
+  local code=${1%%#*} resp
+  resp=$(jq --arg c "$code" --arg id "$CLIENT_ID" --arg uri "$REDIRECT_URI" \
+           '{grant_type:"authorization_code", code:$c, redirect_uri:$uri, client_id:$id,
+             code_verifier:.verifier, state:.state}' "$pending" | post_json "$TOKEN_URL") || return 1
+  jq -e '.access_token' >/dev/null 2>&1 <<<"$resp" || { echo "login failed: $resp" >&2; return 1; }
+  jq '{accessToken:.access_token, refreshToken:.refresh_token, expiresAt:((now + (.expires_in // 3600)) * 1000 | floor), scope}' \
+    <<<"$resp" > "$creds.tmp" && mv -f "$creds.tmp" "$creds"
+  rm -f "$pending"
+  echo "logged in, scope: $(jq -r .scope "$creds")"
+}
+
+if [ "${1:-}" = "login" ]; then
+  login "${2:-}"
+elif [ "${1:-}" = "--cache" ]; then
+  exec 9>"$cache/lock"; flock -n 9 || exit 0     # one fetcher at a time (also serialises refresh)
+  if out=$(main) && jq -e '.five_hour' >/dev/null 2>&1 <<<"$out"; then
+    printf '%s' "$out" > "$cache/usage.json.tmp" && mv -f "$cache/usage.json.tmp" "$cache/usage.json"
+    rm -f "$cache/error"
+  else
+    date +%s > "$cache/error"      # status line backs off after a failure
+  fi
+else
+  out=$(main) && jq . <<<"$out"
+fi

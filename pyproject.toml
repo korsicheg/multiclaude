@@ -1,0 +1,11 @@
+# Tooling only: the bot's Python runs with the system python3 and no dependencies.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 130
+include = ["bin/*.py", "bin/tg", "bin/patch-telegram-plugin", "lib/**/*.py", "addons/*/*.py", "addons/slack/slack",
+           "addons/siri/assistant-voice", "tests/*.py", "tests/addons/*.py"]
+
+[tool.ruff.lint]
+select = ["F", "E9"]

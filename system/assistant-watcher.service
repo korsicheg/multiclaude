@@ -1,0 +1,16 @@
+[Unit]
+Description=multiclaude router: routes each message to its person's assistant and runs the bot's commands
+After=assistant.service network-online.target
+PartOf=assistant.service
+
+[Service]
+Type=simple
+User={{USER}}
+Environment=HOME={{HOME}}
+WorkingDirectory={{ROOT}}
+ExecStart={{PYTHON}} -I {{ROOT}}/bin/watcher.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=assistant.service

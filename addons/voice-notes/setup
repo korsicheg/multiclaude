@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Run by `assistant addon enable voice-notes`: Whisper in a venv of its own, outside the repo, so the
+# router itself stays standard-library only. ASSISTANT_WHISPER moves the whole folder.
+set -euo pipefail
+
+WHISPER="${ASSISTANT_WHISPER:-$HOME/.local/share/whisper}"
+FASTER_WHISPER="faster-whisper==1.2.1"
+PYAV="av<16"  # PyAV 16's av.open dropped an argument faster-whisper passes
+
+command -v uv >/dev/null || { echo "error: installing Whisper needs uv: https://docs.astral.sh/uv/" >&2; exit 1; }
+[ -x "$WHISPER/venv/bin/python" ] || uv venv --python 3.12 "$WHISPER/venv"
+uv pip install --python "$WHISPER/venv/bin/python" "$FASTER_WHISPER" "$PYAV"
+echo "Whisper is ready in $WHISPER/venv. Its model (about 460 MB) downloads into $WHISPER/models with the first voice note."

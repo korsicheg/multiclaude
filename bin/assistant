@@ -1,0 +1,643 @@
+#!/usr/bin/env bash
+# Control script for the assistants and the bot. Run `assistant help` for usage.
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR source=common.sh
+. "$(dirname "$(readlink -f "$0")")/common.sh"
+ACCESS="$TELEGRAM_DIR/access.json"
+export LC_ALL=C.UTF-8
+
+JOB_TIMEOUT=3600  # seconds; a scheduled job still running after this is stopped
+TG_HELD=75        # tg's exit code when Telegram was out of reach and it holds the message to send later
+JOB_PROMPT='You are running as a scheduled job, not a live chat. Your final response is sent to the user on Telegram verbatim, so make it the message itself: no preamble, in Markdown as described under "Formatting" in your instructions. To send files as well, use `tg send --file PATH`. If there is nothing worth telling the user, respond with exactly NOTHING.'
+
+die() { echo "error: $*" >&2; exit 1; }
+
+bot_token() {
+  [ -f "$TELEGRAM_DIR/.env" ] || die "no bot token yet; run: assistant setup"
+  sed -n 's/^TELEGRAM_BOT_TOKEN=//p' "$TELEGRAM_DIR/.env" | head -1
+}
+
+# The bot as Telegram has it ({first_name, username, …}); the token goes in through a pipe, never
+# on a command line.
+bot_profile() {
+  local token=$1
+  curl -fsS --variable "token@-" --expand-url "${TG_API_BASE:-https://api.telegram.org}/bot{{token:trim}}/getMe" \
+    <<<"$token" | jq -ce .result
+}
+
+bot_username() { bot_profile "$1" | jq -r .username; }
+
+# config.json: the bot's username, and its name, which the owner may have changed, is kept.
+save_bot_profile() {
+  local profile=$1
+  [ -f "$CONFIG" ] || echo '{}' > "$CONFIG"
+  update_json "$CONFIG" --argjson p "$profile" '.username = $p.username | .name = (.name // $p.first_name)'
+}
+
+# The user named by --user NAME at the front of the args, or the owner.
+pick_user() {
+  if [ "${1:-}" = "--user" ]; then echo "${2:-}"; else owner_name; fi
+}
+
+# render TEMPLATE KEY=VALUE…: the template with each {{KEY}} replaced by its value.
+render() {
+  python3 -I - "$@" <<'EOF'
+import sys
+template, *pairs = sys.argv[1:]
+text = open(template).read()
+for key, value in (pair.split("=", 1) for pair in pairs):
+    text = text.replace("{{" + key + "}}", value)
+sys.stdout.write(text)
+EOF
+}
+
+render_claude_md() {
+  local name=$1 ws=$2 owner
+  owner=$(jq -r --arg n "$(owner_name)" '.[$n].display // "the owner"' "$USERS")
+  render "$ROOT/templates/CLAUDE.md.tmpl" NAME="$name" DISPLAY="$(user_field "$name" display)" WS="$ws" \
+    OWNER="$owner" > "$ws/CLAUDE.md"
+}
+
+# Set this machine up for the user running it: the commands on the PATH, Claude Code's managed
+# settings, the status line, the assistants' rules, the Telegram plugin, the services and the
+# shared-sync cron line. Safe to run again, after an update say.
+cmd_install() {
+  check_programs
+  mkdir -p "$HOME/.local/bin" "$HOME/workspaces" "$ROOT/logs"
+  ln -sf "$ROOT/bin/assistant" "$ROOT/bin/tg" "$ROOT/system/claude-usage" "$HOME/.local/bin/"
+  install_managed_settings
+  install_statusline
+  install_rules
+  install_telegram_plugin
+  install_services
+  install_shared_sync
+  echo "Installed for $(id -un). Next: assistant setup"
+}
+
+check_programs() {
+  local program missing=()
+  for program in claude bun tmux jq curl git openssl python3; do
+    command -v "$program" >/dev/null || missing+=("$program")
+  done
+  [ ${#missing[@]} = 0 ] || die "install these first: ${missing[*]} (README, Requirements)"
+}
+
+# channelsEnabled lets the front desk use --channels; skipDangerousModePermissionPrompt stops the
+# bypass-permissions warning from holding up sessions nobody watches; cleanupPeriodDays keeps the
+# transcripts that --continue and the router read.
+install_managed_settings() {
+  local file=/etc/claude-code/managed-settings.json
+  sudo mkdir -p "${file%/*}"
+  { sudo cat "$file" 2>/dev/null || echo '{}'; } |
+    jq '. + {cleanupPeriodDays: 99999, skipDangerousModePermissionPrompt: true, channelsEnabled: true}' |
+    sudo tee "$file.new" >/dev/null
+  sudo mv "$file.new" "$file"
+}
+
+# /usage, /model and /effort read the snapshot the status line saves for each session.
+install_statusline() {
+  local settings="$HOME/.claude/settings.json"
+  mkdir -p "$HOME/.claude"
+  ln -sf "$ROOT/system/statusline.sh" "$HOME/.claude/statusline.sh"
+  [ -f "$settings" ] || echo '{}' > "$settings"
+  update_json "$settings" '.statusLine = {"type": "command", "command": "~/.claude/statusline.sh"}'
+}
+
+# How every assistant works, in the parent of everyone's folder: Claude Code loads a parent
+# folder's .claude/CLAUDE.md, so every assistant reads it, and the front desk never does. The
+# rules of each add-in that is on follow the core's, filled in the same way.
+install_rules() {
+  local rules="$HOME/workspaces/.claude/CLAUDE.md" name username
+  local -a values
+  mkdir -p "${rules%/*}"
+  username=$(jq -r '.username // empty' "$CONFIG" 2>/dev/null | grep . || echo your_bot)
+  values=(ROOT="$ROOT" USER="$(id -un)" BOT_NAME="$(bot_name)" BOT_USERNAME="$username")
+  render "$ROOT/system/workspaces-CLAUDE.md" "${values[@]}" > "$rules"
+  for name in $(enabled_addons); do
+    if [ -f "$ROOT/addons/$name/rules.md" ]; then
+      printf '\n' >> "$rules"
+      render "$ROOT/addons/$name/rules.md" "${values[@]}" >> "$rules"
+    fi
+  done
+}
+
+# Only the front desk's folder has the plugin: its .claude/settings.json enables it there.
+install_telegram_plugin() {
+  ( cd "$ROOT" &&
+    { claude plugin marketplace list 2>/dev/null | grep -q claude-plugins-official ||
+        claude plugin marketplace add anthropics/claude-plugins-official; } &&
+    claude plugin install telegram@claude-plugins-official --scope project ) >/dev/null ||
+    die "installing the Telegram plugin failed"
+}
+
+install_services() {
+  local unit
+  for unit in assistant assistant-watcher; do
+    render "$ROOT/system/$unit.service" USER="$(id -un)" HOME="$HOME" ROOT="$ROOT" \
+      TMUX="$(command -v tmux)" PYTHON="$(command -v python3)" | sudo tee "/etc/systemd/system/$unit.service" >/dev/null
+  done
+  sudo systemctl daemon-reload
+  sudo systemctl enable assistant-watcher >/dev/null 2>&1
+}
+
+# Every 10 minutes, `assistant shared sync` moves what every person has into ~/.claude (README).
+install_shared_sync() {
+  local line="3-59/10 * * * * $ROOT/bin/assistant shared sync >> $ROOT/logs/shared.log 2>&1"
+  crontab -l 2>/dev/null | grep -qF "$ROOT/bin/assistant shared sync" && return
+  { crontab -l 2>/dev/null; echo "# assistant: shared plugins, skills and marketplaces, every 10 minutes"; echo "$line"; } |
+    crontab -
+}
+
+cmd_setup() {
+  local token profile username
+  [ -f /etc/systemd/system/assistant.service ] || cmd_install
+  echo "1/2  Telegram bot token from @BotFather (input is hidden)"
+  read -rsp "     Token: " token; echo
+  [ -n "$token" ] || die "no token entered"
+  profile=$(bot_profile "$token") || die "Telegram rejected that token"
+  username=$(jq -r .username <<<"$profile")
+  mkdir -p "$TELEGRAM_DIR" && chmod 700 "$TELEGRAM_DIR"
+  (umask 077; printf 'TELEGRAM_BOT_TOKEN=%s\n' "$token" > "$TELEGRAM_DIR/.env")
+  save_bot_profile "$profile"
+  install_rules
+  echo "     OK, bot is $(bot_name) (@$username); change its name in $CONFIG"
+
+  echo "2/2  Anthropic API key for the sessions, or none to use Claude Code's own login"
+  save_api_settings "$(ask_api_key)"
+
+  sudo systemctl enable assistant >/dev/null 2>&1
+  sudo systemctl restart assistant
+  echo
+  echo "Assistant started. Now:"
+  echo "  1. Open https://t.me/$username and send it any message. It replies with a pairing code."
+  echo "  2. Run: assistant pair <code>"
+}
+
+# The API key the sessions run with, on stdout: the one already set in this shell if the owner wants
+# it, or one typed in. Empty means Claude Code's own login (a Pro or Max plan signed in with claude).
+ask_api_key() {
+  local key="" yn
+  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    read -rp "     Use the ANTHROPIC_API_KEY already set in this shell? [Y/n] " yn
+    case "${yn:-y}" in [Yy]*) key="$ANTHROPIC_API_KEY" ;; esac
+  fi
+  if [ -z "$key" ]; then read -rsp "     API key (hidden; Enter for Claude Code's own login): " key; echo >&2; fi
+  printf '%s' "$key"
+}
+
+# .env, which every session loads (common.sh's load_env): the API key, if there is one, and the
+# address of an API proxy when ANTHROPIC_BASE_URL is set in this shell.
+save_api_settings() {
+  local key=$1
+  (
+    umask 077
+    {
+      echo "# The API settings every session runs with, written by assistant setup."
+      if [ -n "$key" ]; then printf 'ANTHROPIC_API_KEY=%s\n' "$key"; fi
+      if [ -n "${ANTHROPIC_BASE_URL:-}" ]; then printf 'ANTHROPIC_BASE_URL=%s\n' "$ANTHROPIC_BASE_URL"; fi
+    } > "$ROOT/.env"
+  )
+  if [ -n "$key" ]; then echo "     OK, the sessions use this API key."
+  else echo "     OK, the sessions use Claude Code's own login: sign in with claude, then /login, if you haven't."
+  fi
+}
+
+cmd_pair() {
+  local code="${1:-}" name="${2:-}" display="${3:-}" entry sender chat tmp
+  [ -n "$code" ] || die "usage: assistant pair <code> [<name> [<display name>]]"
+  code=$(tr 'A-Z' 'a-z' <<<"$code")
+  [ -f "$ACCESS" ] || die "no pending codes; message the bot first"
+  entry=$(jq -c --arg c "$code" '.pending[$c] // empty' "$ACCESS")
+  [ -n "$entry" ] || die "code '$code' not found; message the bot again for a fresh one"
+  [ "$(jq -r .expiresAt <<<"$entry")" -gt "$(( $(date +%s) * 1000 ))" ] || die "code expired; message the bot again"
+  sender=$(jq -r .senderId <<<"$entry")
+  chat=$(jq -r .chatId <<<"$entry")
+
+  # Approve the sender, then switch to allowlist so strangers get no reply at all.
+  tmp=$(mktemp "$TELEGRAM_DIR/.access.XXXXXX")
+  jq --arg c "$code" --arg s "$sender" '
+    .allowFrom = ((.allowFrom // []) + [$s] | unique)
+    | del(.pending[$c])
+    | .dmPolicy = "allowlist"
+    | .ackReaction = (.ackReaction // "👀")
+  ' "$ACCESS" > "$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$ACCESS"
+  # The Telegram plugin watches approved/ and sends the "Paired!" confirmation.
+  mkdir -p "$TELEGRAM_DIR/approved"
+  printf '%s' "$chat" > "$TELEGRAM_DIR/approved/$sender"
+  echo "Paired Telegram user $sender. Everyone else is now ignored (allowlist mode)."
+
+  if [ -n "$name" ]; then
+    cmd_add_user "$name" "$sender" "$display"
+    sleep 2  # let the plugin's "Paired!" confirmation go first
+    printf '%s\n' \
+      "Hi $(jq -r --arg n "$name" '.[$n].display' "$USERS")! 👋 I'm $(bot_name), running on $(jq -r --arg n "$(owner_name)" '.[$n].display' "$USERS")'s VM. Just write to me here." \
+      "" "**Commands**" \
+      '- `/clear`: start a fresh conversation and delete our recent messages' \
+      '- `/restart`: restart my session with a new conversation, a harder `/clear`' \
+      '- `/stop`: stop what I'"'"'m doing, like Esc in the terminal' \
+      '- `/usage`: how much I'"'"'ve used' \
+      '- `/model`, `/effort`: show or switch my model and effort' \
+      '- `/plugin`, `/skills`: plugins and skills, like in Claude Code' \
+      '- `/mcp`: your own MCP servers' \
+      '- `/config`: the control panel, for your settings and scheduled jobs' \
+      '- `/help`: what you can send me, and what I can do with your MCP servers' \
+      | TG_CHAT_ID="$sender" "$ROOT/bin/tg" send >/dev/null
+  elif [ -z "$(jq -r --arg id "$sender" 'to_entries[] | select(.value.telegram_id == $id) | .key' "$USERS")" ]; then
+    echo "Note: $sender has no assistant yet, so their messages go nowhere. Run: assistant add-user <name> $sender"
+  fi
+}
+
+# Open the bot to pairing so a new person can get a code (`off` closes it again).
+cmd_invite() {
+  local policy=pairing tmp username
+  [ "${1:-}" = off ] && policy=allowlist
+  [ -f "$ACCESS" ] || die "no access file yet; run: assistant setup"
+  tmp=$(mktemp "$TELEGRAM_DIR/.access.XXXXXX")
+  jq --arg p "$policy" '.dmPolicy = $p' "$ACCESS" > "$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$ACCESS"
+  if [ "$policy" = allowlist ]; then echo "Pairing closed. Only approved users can reach the bot."; return; fi
+  username=$(bot_username "$(bot_token)")
+  cat <<EOF
+Pairing is open. Ask the new person to send any message to https://t.me/$username
+The bot replies with a 6-character code. Then run:
+  assistant pair <code> <name> ["Display Name"]
+That approves them, closes pairing again, and sets up their own assistant.
+To close pairing without adding anyone: assistant invite off
+EOF
+}
+
+cmd_add_user() {
+  local name="${1:-}" id="${2:-}" display="${3:-}" ws other tmp
+  [[ "$name" =~ ^[a-z][a-z0-9_-]{0,31}$ ]] ||
+    die "usage: assistant add-user <name> <telegram id> [<display name>]  (name: lowercase letters, digits, - or _)"
+  [[ "$id" =~ ^[0-9]+$ ]] || die "the Telegram id must be numeric"
+  [ -f "$USERS" ] || (umask 077; echo '{}' > "$USERS")  # the first person added becomes the owner
+  other=$(jq -r --arg id "$id" --arg n "$name" 'to_entries[] | select(.value.telegram_id == $id and .key != $n) | .key' "$USERS")
+  [ -z "$other" ] || die "Telegram id $id already belongs to '$other'"
+  [ -n "$display" ] || display=$(jq -r --arg n "$name" '.[$n].display // empty' "$USERS")
+  [ -n "$display" ] || display="${name^}"
+  tmp=$(mktemp "$ROOT/.users.XXXXXX")
+  jq --arg n "$name" --arg id "$id" --arg d "$display" \
+    '.[$n] = ((.[$n] // {role: (if any(.[]; .role == "owner") then "member" else "owner" end)})
+             + {telegram_id: $id, display: $d})' "$USERS" > "$tmp"
+  mv "$tmp" "$USERS"
+
+  ws="$HOME/workspaces/$name"
+  mkdir -p "$ws"
+  [ -f "$ws/CLAUDE.md" ] || render_claude_md "$name" "$ws"
+  [ -f "$ws/jobs.md" ] || printf '# Scheduled jobs for %s\n\nKept in sync with the `# %s:` lines in `crontab -l`. Cron runs in UTC.\n\nNo jobs yet.\n' "$display" "$name" > "$ws/jobs.md"
+  cmd_start_users
+  echo "Added $display ($name, Telegram id $id): workspace $ws, terminal: assistant attach $name"
+}
+
+# Make sure every user's assistant session is running (idempotent).
+cmd_start_users() {
+  local names name failed=0
+  names=$(jq -r 'keys[]' "$USERS") || die "can't read $USERS"
+  for name in $names; do
+    [ -d "$HOME/workspaces/$name" ] || continue
+    tm has-session -t "=u-$name" 2>/dev/null && continue
+    # The router may start the same session at the same moment; losing that race is fine.
+    tm new-session -d -s "u-$name" "${TMUX_SIZE[@]}" "$ROOT/bin/run-user.sh" "$name" 2>/dev/null ||
+      tm has-session -t "=u-$name" 2>/dev/null ||
+      { echo "error: couldn't start the assistant for $name" >&2; failed=1; }
+  done
+  return "$failed"
+}
+
+cmd_status() {
+  local pid name state
+  echo "Service: $(systemctl is-active assistant 2>/dev/null || true)"
+  pid=$(cat "$TELEGRAM_DIR/bot.pid" 2>/dev/null || true)
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "Telegram plugin: running (pid $pid)"
+  else echo "Telegram plugin: not running"; fi
+  echo "Router (routing, typing, the bot's commands, updates): $(systemctl is-active assistant-watcher 2>/dev/null || true)"
+  if [ -f "$ACCESS" ]; then
+    jq -r '"DM policy: \(.dmPolicy)\nAllowed Telegram ids: \(.allowFrom | join(", "))\nPending codes: \(.pending | keys | join(", "))"' "$ACCESS"
+  fi
+  echo "Users:"
+  for name in $(jq -r 'keys[]' "$USERS" 2>/dev/null); do
+    if tm has-session -t "=u-$name" 2>/dev/null; then state="running"; else state="NOT running"; fi
+    jq -r --arg n "$name" --arg s "$state" '.[$n] | "  \($n): \(.display), Telegram \(.telegram_id), \(.role), assistant \($s)"' "$USERS"
+  done
+  echo "Scheduled jobs: $(crontab -l 2>/dev/null | grep -c 'assistant job' || true)"
+  echo
+  echo "--- front desk terminal (last lines) ---"
+  tm capture-pane -p -t assistant 2>/dev/null | grep -v '^[[:space:]]*$' | tail -8 || echo "(not running)"
+}
+
+# What a failure notice calls a job: its prompt's first line, cut short, since a job built from an
+# instructions file (and the data gathered for it) can run to pages.
+job_title() {
+  local first=${1%%$'\n'*}
+  if [ "${#first}" -gt 100 ]; then printf '%s…' "${first:0:99}"; else printf '%s' "$first"; fi
+}
+
+cmd_job() {
+  local user prompt out ws id
+  local -a only_tools=()
+  user=$(pick_user "$@"); [ "${1:-}" = "--user" ] && shift 2
+  # --tools, as Claude Code's flag: the job gets only these built-in tools and no MCP server
+  # at all, so it can't reach anything it wasn't given (a read-only job, say).
+  if [ "${1:-}" = "--tools" ]; then only_tools=(--tools "${2:-}" --strict-mcp-config); shift 2; fi
+  prompt="$*"
+  [ -n "$prompt" ] || die 'usage: assistant job [--user <name>] [--tools <tools>] "<instructions>"'
+  ws="$HOME/workspaces/$user"
+  id=$(user_field "$user" telegram_id)
+  [ -n "$id" ] && [ -d "$ws" ] || die "unknown user '$user' (see $USERS)"
+  mkdir -p "$ROOT/logs" "$ROOT/state/jobs"
+  # One run of a job at a time, so a slow run doesn't pile up behind the next cron tick.
+  exec 8>"$ROOT/state/jobs/$(printf '%s\n%s' "$user" "$prompt" | sha256sum | cut -c1-16).lock"
+  if ! flock -n 8; then
+    printf '=== %s | %s | %s\n(skipped: the previous run is still running)\n\n' "$(date -Is)" "$user" "$prompt" >> "$ROOT/logs/jobs.log"
+    return 0
+  fi
+  load_env
+  # Jobs run in the user's workspace (their CLAUDE.md and memory). They must not
+  # load the Telegram plugin: a second copy would take over the live bot, and a
+  # failed one makes Claude skip the plugin at the next start. The prompt goes in
+  # on stdin, so one starting with "-" isn't taken for an option.
+  out=$(cd "$ws" && printf '%s' "$prompt" | TG_CHAT_ID="$id" ASSISTANT_USER="$user" \
+          timeout "$JOB_TIMEOUT" claude -p --output-format json \
+          --settings "$TELEGRAM_PLUGIN_OFF" \
+          --permission-mode auto --permission-prompts none --no-session-persistence \
+          "${only_tools[@]}" --append-system-prompt "$JOB_PROMPT" 2>>"$ROOT/logs/jobs.err") \
+    || out="Scheduled job failed: $(job_title "$prompt") (details in ~/assistant/logs/jobs.err)"
+  # The JSON result carries the answer and what the job cost. The cost goes into the same
+  # per-session ledger the status line keeps for live sessions (the total in /usage).
+  if jq -e 'type == "object" and has("result")' >/dev/null 2>&1 <<<"$out"; then
+    jq -c --arg name "$user" --arg dir "$ws" 'select((.total_cost_usd // 0) > 0)
+      | {session_id: ("job-" + (.session_id // (now | tostring))), name: $name, dir: $dir,
+         base: 0, last: .total_cost_usd, since: (now | floor), updated: (now | floor)}' <<<"$out" 2>/dev/null \
+      | while read -r line; do
+          f="$HOME/.claude/state/costs/$(jq -r .session_id <<<"$line" | tr -cd 'A-Za-z0-9_.-').json"
+          mkdir -p "${f%/*}" && printf '%s\n' "$line" > "$f"
+        done || true  # never let bookkeeping cost the user their answer
+    out=$(jq -r '.result // empty' <<<"$out")
+  fi
+  printf '=== %s | %s | %s\n%s\n\n' "$(date -Is)" "$user" "$prompt" "$out" >> "$ROOT/logs/jobs.log"
+  if [ -n "$out" ] && [ "$out" != "NOTHING" ]; then printf '%s' "$out" | cmd_notify --user "$user"; fi
+}
+
+# An assistant can't type a slash command into its own terminal, so after it installs or updates a
+# plugin or skill itself it asks the router, which types /reload-plugins once it's idle.
+cmd_reload_plugins() {
+  local user
+  user=$(pick_user "$@")
+  [ -n "$(user_field "$user" telegram_id)" ] || die "unknown user '$user' (see $USERS)"
+  mkdir -p "$ROOT/state/reload-requests"
+  : > "$ROOT/state/reload-requests/$user"
+  echo "The router reloads $user's plugins and skills once their assistant is idle."
+}
+
+# The relay (relay/): a Cloudflare Worker that serves the control panel's page, holds its taps while
+# the machine is offline, and takes in what the add-ins that are on bring (their routes in
+# relay/src). Deploy it with the token in state/cloudflare.json, set its secrets, have each add-in
+# that is on do its own part (addons/<name>/relay-deploy), and point the router at it
+# (state/relay.json).
+WRANGLER=wrangler@4.149.0
+RELAY_WORKER=assistant-relay
+RELAY_SETTINGS="$ROOT/state/relay.json"
+
+cmd_relay() {
+  case "${1:-}" in
+    deploy) relay_deploy ;;
+    *) die "usage: assistant relay deploy" ;;
+  esac
+}
+
+relay_deploy() {
+  local cf="$ROOT/state/cloudflare.json" account subdomain host key addons
+  local -a vars=()
+  [ -f "$cf" ] || die "no $cf: save {\"api_token\": \"…\", \"account_id\": \"…\"} there first (README, "The control panel and the relay")"
+  account=$(jq -r '.account_id // empty' "$cf")
+  [ -n "$account" ] || die "no account_id in $cf"
+  key=$(webapp_key) || exit 1
+  [ -f "$RELAY_SETTINGS" ] || (umask 077; mkdir -p "${RELAY_SETTINGS%/*}"; echo '{}' > "$RELAY_SETTINGS")
+  [ -n "$(jq -r '.relay_token // empty' "$RELAY_SETTINGS")" ] ||
+    update_json "$RELAY_SETTINGS" --arg t "$(openssl rand -hex 32)" '.relay_token = $t'
+  subdomain=$(workers_subdomain "$account") || die "can't find or make the account's workers.dev subdomain"
+  host="$RELAY_WORKER.$subdomain.workers.dev"
+  addons=$(enabled_addons | paste -sd, -)
+  [ -z "$addons" ] || vars=(--var "ADDONS:$addons")  # the Worker mounts the routes of these
+  (
+    cd "$ROOT/relay" || exit 1
+    CLOUDFLARE_API_TOKEN=$(jq -r .api_token "$cf"); export CLOUDFLARE_API_TOKEN
+    export CLOUDFLARE_ACCOUNT_ID=$account WRANGLER RELAY_HOST=$host
+    npx --yes "$WRANGLER" deploy "${vars[@]}" || exit 1
+    jq -r .relay_token "$RELAY_SETTINGS" | npx --yes "$WRANGLER" secret put RELAY_TOKEN || exit 1
+    printf '%s' "$key" | npx --yes "$WRANGLER" secret put TELEGRAM_WEBAPP_KEY || exit 1
+    run_addon_hooks relay-deploy
+  ) || die "deploying the relay failed"
+  update_json "$RELAY_SETTINGS" --arg u "wss://$host/queue" '.relay_url = $u'
+  echo "The relay is live at https://$host."
+  restart_router
+}
+
+# The key Telegram signs the control panel's init data with: HMAC-SHA256 of the bot token, keyed
+# "WebAppData". The relay checks signatures with it, but it can't drive the bot.
+webapp_key() {
+  local token
+  token=$(bot_token)
+  [ -n "$token" ] || die "no bot token in $TELEGRAM_DIR/.env"
+  printf '%s' "$token" | openssl dgst -sha256 -hmac WebAppData -r | cut -d' ' -f1
+}
+
+# The account's workers.dev subdomain, made the first time (a Worker's address needs one).
+workers_subdomain() {
+  local url="https://api.cloudflare.com/client/v4/accounts/$1/workers/subdomain" found
+  found=$(cloudflare_api GET "$url" | jq -r '.result.subdomain // empty')
+  [ -n "$found" ] || found=$(cloudflare_api PUT "$url" "{\"subdomain\": \"assistant-$(openssl rand -hex 3)\"}" |
+                               jq -r '.result.subdomain // empty')
+  [ -n "$found" ] && echo "$found"
+}
+
+# cloudflare_api METHOD URL [JSON]: the token goes in through a pipe, never on a command line.
+cloudflare_api() {
+  jq -r '"Authorization: Bearer \(.api_token)"' "$ROOT/state/cloudflare.json" |
+    curl -sS -X "$1" -H @- -H "Content-Type: application/json" ${3:+--data "$3"} "$2"
+}
+
+# update_json FILE JQ-ARGS…: rewrite a private state file through jq.
+update_json() {
+  local file=$1 tmp
+  shift
+  tmp=$(mktemp "$file.XXXXXX")
+  jq "$@" "$file" > "$tmp" && mv "$tmp" "$file"
+}
+
+# --- add-ins (addons/<name>/): in the repo, but on only while config.json lists them ---
+
+cmd_addon() {
+  case "${1:-list}" in
+    list) addon_list ;;
+    enable|disable) [ $# = 2 ] || die "usage: assistant addon $1 <name>"; addon_switch "$1" "$2" ;;
+    *) die "usage: assistant addon list | enable <name> | disable <name>" ;;
+  esac
+}
+
+# The add-ins config.json turns on, one per line.
+enabled_addons() {
+  local dir
+  for dir in "$ROOT"/addons/*/; do
+    dir=${dir%/}
+    if addon_on "${dir##*/}"; then echo "${dir##*/}"; fi
+  done
+}
+
+addon_list() {
+  local dir name state
+  for dir in "$ROOT"/addons/*/; do
+    dir=${dir%/} name=${dir##*/} state=off
+    if addon_on "$name"; then state=on; fi
+    printf '%-15s %-4s %s\n' "$name" "$state" "$(readme_summary "$dir/README.md")"
+  done
+}
+
+# The first sentence under a README's title.
+readme_summary() {
+  awk 'NF && !/^#/ { sub(/\. .*/, "."); print; exit }' "$1" 2>/dev/null
+}
+
+# Turn an add-in on (once its addons/<name>/setup, if it has one, has worked) or off: config.json,
+# the assistants' rules, and the router, which reads some of it only as it starts. Then what's
+# left for the owner to do (addons/<name>/next-steps).
+addon_switch() {
+  local action=$1 name=$2 folder="$ROOT/addons/$2" change
+  [[ "$name" =~ ^[a-z][a-z-]*$ ]] && [ -d "$folder" ] || die "no add-in named '$name' (assistant addon list)"
+  if [ "$action" = enable ] && [ -x "$folder/setup" ]; then
+    "$folder/setup" || die "setting up $name failed, so it stays off"
+  fi
+  change='.addons = ((.addons // []) - [$n])'
+  [ "$action" = disable ] || change="$change + [\$n]"
+  [ -f "$CONFIG" ] || echo '{}' > "$CONFIG"
+  update_json "$CONFIG" --arg n "$name" "$change"
+  install_rules
+  echo "$name is ${action}d."
+  restart_router
+  if [ -f "$folder/next-steps" ]; then cat "$folder/next-steps"; fi
+  echo "Each assistant reads its new rules from its next /clear or restart."
+}
+
+# run_addon_hooks HOOK: addons/<name>/HOOK of every add-in that is on and has one.
+run_addon_hooks() {
+  local hook=$1 name
+  for name in $(enabled_addons); do
+    if [ -x "$ROOT/addons/$name/$hook" ]; then "$ROOT/addons/$name/$hook" || return 1; fi
+  done
+}
+
+# An add-in's own command, addons/<name>/assistant-<command>, which works while the add-in is on.
+cmd_from_addon() {
+  local script name
+  script=$(addon_command "${1:-}") || { cmd_help; return 0; }
+  name=${script%/*} && name=${name##*/}
+  addon_on "$name" || die "assistant $1 comes with the $name add-in, which is off: assistant addon enable $name"
+  shift
+  exec "$script" "$@"
+}
+
+# The script of an add-in's command, if an add-in has one by that name.
+addon_command() {
+  local script
+  [[ "$1" =~ ^[a-z][a-z-]*$ ]] || return 1
+  for script in "$ROOT"/addons/*/"assistant-$1"; do
+    if [ -x "$script" ]; then echo "$script"; return 0; fi
+  done
+  return 1
+}
+
+# The add-ins' commands for `assistant help`, from the "# assistant …: what it does" line each starts with.
+addon_commands_help() {
+  local script name
+  for script in "$ROOT"/addons/*/assistant-*; do
+    [ -x "$script" ] || continue
+    name=${script%/*} && name=${name##*/}
+    sed -n "2s/^# \(assistant [^:]*\): \(.*\)/\1\n                                \2 ($name)/p" "$script"
+  done
+}
+
+# The router reads which add-ins are on, and the relay's address, as it starts: restart it when it
+# runs, and it is this install's.
+restart_router() {
+  systemctl show -p ExecStart --value assistant-watcher 2>/dev/null | grep -qF "$ROOT/bin/watcher.py" || return 0
+  systemctl is-active --quiet assistant-watcher || return 0
+  sudo systemctl restart assistant-watcher && echo "Restarted the router."
+}
+
+cmd_notify() {
+  local user text id
+  user=$(pick_user "$@"); [ "${1:-}" = "--user" ] && shift 2
+  id=$(user_field "$user" telegram_id)
+  [ -n "$id" ] || die "unknown user '$user' (see $USERS)"
+  if [ $# -gt 0 ]; then text="$*"; else text=$(cat); fi
+  [ -n "$text" ] || return 0
+  # tg splits long text and records the messages, so the user's /clear deletes them.
+  local rc=0
+  printf '%s' "$text" | "$ROOT/bin/tg" --chat "$id" send >/dev/null || rc=$?
+  [ "$rc" = 0 ] || [ "$rc" = "$TG_HELD" ] || die "sending to $user ($id) failed"
+}
+
+cmd_help() {
+  cat <<'EOF'
+assistant install               Set this machine up for the user running it: commands,
+                                Claude Code settings, the Telegram plugin, the services
+assistant setup                 Save the bot token (and an API key, if the sessions use one),
+                                then start the service
+assistant status                Service, routing, pairing and per-user state
+assistant attach [<name>]       Open a user's assistant terminal, or the front desk without a name
+                                (leave with Ctrl-b then d)
+assistant start|stop|restart    Front desk, every user's assistant and the router
+assistant invite [off]          Open the bot to pairing so a new person can get a code
+assistant pair <code> [<name> ["Display Name"]]
+                                Approve a pairing code, close pairing, and set up that
+                                person's own assistant when a name is given
+assistant add-user <name> <telegram id> ["Display Name"]
+                                Give an already-allowed Telegram user their own assistant
+assistant start-users           Start any user assistant that isn't running
+assistant job [--user <name>] [--tools <tools>] "<task>"
+                                Run a one-shot task in that user's workspace and send them
+                                the result (used by cron; default user: the owner); with
+                                --tools, only those built-in tools and no MCP servers
+assistant reload-plugins [--user <name>]
+                                Have the router type /reload-plugins into that user's assistant
+                                once it's idle (after it installed or updated a plugin or skill)
+assistant notify [--user <name>] "<msg>"
+                                Send a Telegram message to one user (default: the owner)
+assistant shared sync [--dry-run]
+                                Move plugins, skills and marketplaces that every user has
+                                into ~/.claude, and back out when someone turns one off
+                                (cron runs it every 10 minutes)
+assistant shared list           What's shared and what each user has in their own folder
+assistant relay deploy          Deploy the relay (the control panel, and the routes of the add-ins
+                                that are on) to Cloudflare and point the router at it
+assistant addon list            The add-ins, on or off; assistant addon enable|disable <name>
+                                turns one on or off
+EOF
+  echo
+  echo "The add-ins' commands, while the add-in is on:"
+  addon_commands_help
+}
+
+case "${1:-help}" in
+  install) cmd_install ;;
+  setup)   cmd_setup ;;
+  pair)    shift; cmd_pair "$@" ;;
+  status)  cmd_status ;;
+  attach)  if [ -n "${2:-}" ]; then tm attach -t "=u-$2"; else tm attach -t =assistant; fi ;;
+  invite)  shift; cmd_invite "$@" ;;
+  add-user) shift; cmd_add_user "$@" ;;
+  start-users) cmd_start_users ;;
+  start|stop|restart) sudo systemctl "$1" assistant ;;
+  job)     shift; cmd_job "$@" ;;
+  notify)  shift; cmd_notify "$@" ;;
+  reload-plugins) shift; cmd_reload_plugins "$@" ;;
+  shared)  shift; exec python3 -I "$ROOT/bin/shared.py" "$@" ;;
+  relay)   shift; cmd_relay "$@" ;;
+  addon)   shift; cmd_addon "$@" ;;
+  help)    cmd_help ;;
+  *)       cmd_from_addon "$@" ;;
+esac

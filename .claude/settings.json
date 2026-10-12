@@ -1,0 +1,10 @@
+{
+  "enabledPlugins": {
+    "telegram@claude-plugins-official": true
+  },
+  "permissions": {
+    "allow": [
+      "mcp__plugin_telegram_telegram"
+    ]
+  }
+}

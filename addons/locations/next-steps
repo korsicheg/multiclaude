@@ -1,0 +1,1 @@
+Next: run `assistant restart`. The front desk patches the Telegram plugin for locations as it starts, and each assistant gets ASSISTANT_LOCATION as it starts.

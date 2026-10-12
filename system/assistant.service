@@ -1,0 +1,17 @@
+[Unit]
+Description=multiclaude front desk: the Claude Code session that hosts the Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User={{USER}}
+Environment=HOME={{HOME}}
+WorkingDirectory={{ROOT}}
+ExecStart={{TMUX}} -L assistant new-session -d -s assistant -x 160 -y 50 {{ROOT}}/bin/run.sh
+ExecStop={{TMUX}} -L assistant kill-server
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

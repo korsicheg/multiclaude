@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Control panel</title>
+<!-- Telegram's Mini App script (telegram.org/js/telegram-web-app.js?64), served from here:
+     some networks block telegram.org, and then the page can't tell who opened it. -->
+<script src="telegram-web-app.js"></script>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<main>
+  <p id="status" class="status">Loading…</p>
+  <p id="notice" class="notice" hidden></p>
+  <div id="sections"></div>
+  <button id="home-screen" class="wide" hidden>Add to home screen</button>
+</main>
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="app.js" type="module"></script>
+</body>
+</html>

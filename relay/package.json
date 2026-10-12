@@ -1,0 +1,5 @@
+{
+  "name": "assistant-relay",
+  "private": true,
+  "type": "module"
+}

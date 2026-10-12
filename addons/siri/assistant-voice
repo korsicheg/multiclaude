@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+# assistant voice key|revoke <name>: a new Siri voice key for that user, printed once, or forget theirs
+"""Voice keys, which let a person talk to their assistant through Siri (the siri add-in, see
+multiclaude.addons.siri.voice). bin/assistant runs this while the add-in is on.
+
+  assistant voice key <name>      make a new key for that person, replacing theirs, and print it
+  assistant voice revoke <name>   forget that person's key
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
+
+from multiclaude import users  # noqa: E402
+from multiclaude.addons.siri import voice  # noqa: E402
+
+
+def main(args):
+    if len(args) != 2 or args[0] not in ("key", "revoke"):
+        print(__doc__.split("\n\n", 1)[1].rstrip())
+        return 2
+    command, name = args
+    if name not in users.load_users():
+        print(f"voice: no user named {name} in users.json", file=sys.stderr)
+        return 1
+    if command == "key":
+        print(voice.new_key(name))
+    elif voice.revoke(name):
+        print(f"{name}'s voice key is revoked")
+    else:
+        print(f"{name} had no voice key")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

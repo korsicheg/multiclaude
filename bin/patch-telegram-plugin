@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""Patch the Telegram plugin for the router.
+
+The plugin owns the bot's getUpdates, so only it sees what Telegram sends. Five patches:
+
+- tg ask buttons: the plugin drops button taps (callback queries) that aren't its own
+  permission buttons. This adds a branch for callback data "ask:<n>" (what `tg ask` puts on
+  its buttons): from an allowed sender, the tap goes to Claude like an inbound message, with
+  the button label as text and callback_id/callback_data in its meta, so the router sees it
+  in the front desk transcript and routes it.
+- replies: an inbound message that replies to another one carries reply_to_message_id, the
+  replied-to message's text as reply_to_text (rich messages flattened to plain text), and
+  the part the person quoted, if any, as reply_quote.
+- locations, only while the locations add-in is on: the plugin drops shared locations. This
+  passes a location or place on as a message with its coordinates in meta (location_lat,
+  location_lon, location_accuracy_m, location_live_period), and keeps the sender's latest
+  position, live updates included, in state/locations/<user id>.json. Live updates only update
+  that file.
+- rich messages: a formatted message (headings, lists, code, tables) arrives as rich_message
+  with no text, so the plugin drops it. This passes it on as GitHub-flavored Markdown; photos,
+  files and other media inside it become a note with their file_id, for `tg download`.
+- /help: the plugin answers /help itself with its pairing help. From a paired sender this
+  passes it on to Claude like any message instead, so the router answers it; others still get
+  the plugin's text.
+
+The plugin lives in Claude Code's plugin cache, which a plugin update replaces
+with a fresh copy, so run.sh runs this before every front desk start. It keeps
+each cached version's server.ts as installed (ORIGINALS) and rebuilds it from that
+every run with the core's patches and those of the add-ins that are on in
+config.json, so turning an add-in off takes its patch out again. It writes the
+file only when that changes it. If a version's code no longer matches a patch, it
+leaves that patch out, exits 1 and tells the owner once per version and patch.
+It runs on its own, without the bot's library. See ARCHITECTURE.md.
+"""
+import glob
+import json
+import os
+import subprocess
+import sys
+from dataclasses import dataclass
+
+HOME = os.path.expanduser("~")
+ROOT = os.environ.get("ASSISTANT_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))  # ~/assistant
+CONFIG = f"{ROOT}/config.json"  # the add-ins that are on (lib/multiclaude/addons)
+PLUGIN = f"{HOME}/.claude/plugins/cache/claude-plugins-official/telegram"
+NOTIFIED = f"{ROOT}/state/plugin-patch-failed"  # versions the owner was already told about
+ORIGINALS = f"{ROOT}/state/telegram-plugin"  # <version>-server.ts: each version as installed, unpatched
+LOCATIONS = f"{ROOT}/state/locations"  # <user id>.json: each sender's latest shared position
+MARKER = "multiclaude:"  # in every patch, so a file with none is as installed
+
+ASK_ANCHOR = """  if (!m) {
+    await ctx.answerCallbackQuery().catch(() => {})
+    return
+  }
+"""
+ASK_PATCH = """  if (!m) {
+    // multiclaude: tg ask buttons. Taps on buttons sent by `tg ask` (callback data
+    // "ask:<n>") reach Claude like an inbound message; multiclaude's router routes
+    // them. Added by multiclaude's bin/patch-telegram-plugin.
+    if (/^ask:\\d+$/.test(data) && ctx.chat?.type === 'private'
+        && loadAccess().allowFrom.includes(String(ctx.from.id))) {
+      const msg = ctx.callbackQuery.message
+      const rows = (msg && 'reply_markup' in msg && msg.reply_markup?.inline_keyboard) || []
+      const label = rows.flat().find(b => 'callback_data' in b && b.callback_data === data)?.text ?? data
+      void mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content: label,
+          meta: {
+            chat_id: String(ctx.chat.id),
+            ...(msg ? { message_id: String(msg.message_id) } : {}),
+            user: ctx.from.username ?? String(ctx.from.id),
+            user_id: String(ctx.from.id),
+            ts: new Date().toISOString(),
+            callback_id: ctx.callbackQuery.id,
+            callback_data: data,
+          },
+        },
+      }).catch(err => {
+        process.stderr.write(`telegram channel: failed to deliver button tap to Claude: ${err}\\n`)
+      })
+    }
+    await ctx.answerCallbackQuery().catch(() => {})
+    return
+  }
+"""
+REPLY_META_ANCHOR = """        ts: new Date((ctx.message?.date ?? 0) * 1000).toISOString(),
+"""
+REPLY_META_PATCH = REPLY_META_ANCHOR + """        // multiclaude: replies. What this message replies to, so the person's assistant
+        // sees it too. Added by multiclaude's bin/patch-telegram-plugin.
+        ...(ctx.message?.reply_to_message ? {
+          reply_to_message_id: String(ctx.message.reply_to_message.message_id),
+          reply_to_text: multiclaudePlainText(ctx.message.reply_to_message.text ?? ctx.message.reply_to_message.caption
+            ?? (ctx.message.reply_to_message as any).rich_message ?? '').slice(0, 3000),
+        } : {}),
+        ...(ctx.message?.quote?.text ? { reply_quote: ctx.message.quote.text } : {}),
+"""
+REPLY_HELPER_ANCHOR = """async function handleInbound(
+"""
+REPLY_HELPER_PATCH = """// multiclaude: replies. The plain text of a rich message (its blocks, list items, table
+// rows), or of a string. Added by multiclaude's bin/patch-telegram-plugin.
+function multiclaudePlainText(v: any): string {
+  if (typeof v === 'string') return v
+  if (Array.isArray(v)) return v.map(multiclaudePlainText).join('')
+  if (!v || typeof v !== 'object') return ''
+  const words = ['summary', 'text', 'expression', 'cells'].filter(k => k in v).map(k => multiclaudePlainText(v[k]))
+  const lines = ['blocks', 'items', 'rows'].filter(k => Array.isArray(v[k])).flatMap(k => v[k].map(multiclaudePlainText))
+  return [...words, ...lines].filter(Boolean).join('\\n')
+}
+
+""" + REPLY_HELPER_ANCHOR
+LOCATION_HANDLERS_ANCHOR = """type AttachmentMeta = {
+"""
+LOCATION_HANDLERS_PATCH = """// multiclaude: locations. A shared location or place reaches Claude like a message, with
+// its coordinates in meta. Its latest position, live updates included, is kept in
+// the bot's state/locations/<user id>.json for tools to read; live updates don't reach
+// Claude. Only allowed senders in a private chat count. Added by multiclaude's bin/patch-telegram-plugin.
+const MULTICLAUDE_LOCATIONS_DIR = """ + json.dumps(LOCATIONS) + """
+
+function multiclaudeAllowedSender(ctx: Context): boolean {
+  return ctx.chat?.type === 'private' && !!ctx.from && loadAccess().allowFrom.includes(String(ctx.from.id))
+}
+
+function multiclaudeSaveLocation(userId: number, msg: any): void {
+  const loc = msg.location
+  const position = {
+    latitude: loc.latitude,
+    longitude: loc.longitude,
+    ...(loc.horizontal_accuracy != null ? { accuracy_m: loc.horizontal_accuracy } : {}),
+    ...(loc.heading != null ? { heading: loc.heading } : {}),
+    message_id: msg.message_id,
+    ...(loc.live_period ? { live_until: msg.date + loc.live_period } : {}),
+    updated: msg.edit_date ?? msg.date,
+  }
+  try {
+    mkdirSync(MULTICLAUDE_LOCATIONS_DIR, { recursive: true })
+    const path = join(MULTICLAUDE_LOCATIONS_DIR, `${userId}.json`)
+    writeFileSync(`${path}.tmp`, JSON.stringify(position) + '\\n')
+    renameSync(`${path}.tmp`, path)
+  } catch (err) {
+    process.stderr.write(`telegram channel: saving a location failed: ${err}\\n`)
+  }
+}
+
+function multiclaudeLocationMeta(msg: any): Record<string, string> {
+  const loc = msg.location
+  return {
+    location_lat: String(loc.latitude),
+    location_lon: String(loc.longitude),
+    ...(loc.horizontal_accuracy != null ? { location_accuracy_m: String(Math.round(loc.horizontal_accuracy)) } : {}),
+    ...(loc.live_period ? { location_live_period: String(loc.live_period) } : {}),
+  }
+}
+
+bot.on('message:location', async ctx => {
+  const msg = ctx.message as any
+  if (multiclaudeAllowedSender(ctx)) multiclaudeSaveLocation(ctx.from!.id, msg)
+  const venue = msg.venue
+  const text = venue ? `(place: ${[venue.title, venue.address].filter(Boolean).join(', ')})`
+    : msg.location.live_period ? '(live location)' : '(location)'
+  await handleInbound(ctx, text, undefined)
+})
+
+bot.on('edited_message:location', ctx => {
+  if (multiclaudeAllowedSender(ctx)) multiclaudeSaveLocation(ctx.from!.id, ctx.editedMessage)
+})
+
+""" + LOCATION_HANDLERS_ANCHOR
+LOCATION_META_ANCHOR = """        ...(imagePath ? { image_path: imagePath } : {}),
+"""
+LOCATION_META_PATCH = """        // multiclaude: locations. Added by multiclaude's bin/patch-telegram-plugin.
+        ...(ctx.message?.location ? multiclaudeLocationMeta(ctx.message) : {}),
+""" + LOCATION_META_ANCHOR
+RICH_ANCHOR = """bot.on('message:text', async ctx => {
+  await handleInbound(ctx, ctx.message.text, undefined)
+})
+"""
+RICH_MARKDOWN = r"""// multiclaude: rich messages. A rich message's blocks as GitHub-flavored Markdown.
+// Added by multiclaude's bin/patch-telegram-plugin.
+const MULTICLAUDE_MARKS: Record<string, string> = { bold: '**', italic: '*', strikethrough: '~~', spoiler: '||' }
+const MULTICLAUDE_MEDIA = new Set(['photo', 'video', 'animation', 'audio', 'document', 'voice_note'])
+
+function multiclaudeRichMarkdown(blocks: any[] = []): string {
+  return blocks.map(multiclaudeBlockMarkdown).filter(Boolean).join('\n\n')
+}
+
+function multiclaudeBlockMarkdown(block: any): string {
+  switch (block.type) {
+    case 'paragraph':
+    case 'footer':
+      return multiclaudeTextMarkdown(block.text)
+    case 'heading':
+      return `${'#'.repeat(block.size ?? 2)} ${multiclaudeTextMarkdown(block.text)}`
+    case 'pre':
+      return ['```' + (block.language ?? ''), multiclaudeUnformatted(block.text), '```'].join('\n')
+    case 'divider':
+      return '---'
+    case 'mathematical_expression':
+      return `$$${block.expression}$$`
+    case 'list':
+      return block.items.map(multiclaudeListItemMarkdown).join('\n')
+    case 'blockquote':
+      return multiclaudeQuote(multiclaudeRichMarkdown(block.blocks), block.credit)
+    case 'expandable_blockquote':
+    case 'pullquote':
+      return multiclaudeQuote(multiclaudeTextMarkdown(block.text), block.credit)
+    case 'table':
+      return [multiclaudeTableMarkdown(block.cells), multiclaudeTextMarkdown(block.caption)].filter(Boolean).join('\n\n')
+    case 'details':
+      return `<details><summary>${multiclaudeTextMarkdown(block.summary)}</summary>\n\n${multiclaudeRichMarkdown(block.blocks)}\n\n</details>`
+    case 'anchor':
+      return ''
+    default:
+      return multiclaudeEmbedMarkdown(block)
+  }
+}
+
+function multiclaudeTextMarkdown(text: any): string {
+  if (text == null || typeof text === 'string') return text ?? ''
+  if (Array.isArray(text)) return text.map(multiclaudeTextMarkdown).join('')
+  const inner = multiclaudeTextMarkdown(text.text)
+  if (text.type in MULTICLAUDE_MARKS) return MULTICLAUDE_MARKS[text.type] + inner + MULTICLAUDE_MARKS[text.type]
+  switch (text.type) {
+    case 'code':
+      return '`' + multiclaudeUnformatted(text.text) + '`'
+    case 'url':
+      return inner === text.url ? inner : `[${inner}](${text.url})`
+    case 'mathematical_expression':
+      return `$${text.expression}$`
+    case 'custom_emoji':
+      return text.alternative_text
+    case 'button':
+      return `[${text.button.text}]`
+    default:
+      return inner
+  }
+}
+
+function multiclaudeUnformatted(text: any): string {
+  if (text == null || typeof text === 'string') return text ?? ''
+  if (Array.isArray(text)) return text.map(multiclaudeUnformatted).join('')
+  return multiclaudeUnformatted(text.text ?? text.alternative_text ?? text.expression)
+}
+
+function multiclaudeListItemMarkdown(item: any): string {
+  const label = item.has_checkbox ? `- [${item.is_checked ? 'x' : ' '}]` : item.value != null ? `${item.value}.` : '-'
+  const [first = '', ...rest] = item.blocks.map(multiclaudeBlockMarkdown).filter(Boolean).join('\n').split('\n')
+  const indent = ' '.repeat(label.length + 1)
+  return [`${label} ${first}`, ...rest.map((line: string) => line && indent + line)].join('\n')
+}
+
+function multiclaudeQuote(markdown: string, credit: any): string {
+  const by = multiclaudeTextMarkdown(credit)
+  const quoted = [markdown, by && `— ${by}`].filter(Boolean).join('\n\n')
+  return quoted.split('\n').map(line => `> ${line}`.trimEnd()).join('\n')
+}
+
+function multiclaudeTableMarkdown(rows: any[][] = []): string {
+  const cell = (c: any) => multiclaudeTextMarkdown(c.text).replaceAll('|', '\\|').replaceAll('\n', ' ')
+  const lines = rows.map(row => `| ${row.map(cell).join(' | ')} |`)
+  if (!lines.length) return ''
+  return [lines[0], `|${' --- |'.repeat(rows[0].length)}`, ...lines.slice(1)].join('\n')
+}
+
+// Media, maps and buttons: what the block holds, with its caption. A photo or file keeps its
+// file_id, for `tg download`.
+function multiclaudeEmbedMarkdown(block: any): string {
+  // A photo comes in several sizes, the largest last; other media is one object.
+  const media = MULTICLAUDE_MEDIA.has(block.type) ? [block[block.type]].flat().at(-1) : undefined
+  const place = block.location && `${block.location.latitude}, ${block.location.longitude}`
+  const name = media?.file_name ?? place
+  const fileId = media?.file_id ? ` · file_id: ${media.file_id}` : ''
+  const what = `(${String(block.type).replaceAll('_', ' ')}${name ? `: ${name}` : ''}${fileId})`
+  const buttons = (block.buttons ?? []).map((button: any) => `[${button.text}]`).join(' ')
+  return [what, multiclaudeRichMarkdown(block.blocks), buttons, multiclaudeTextMarkdown(block.caption?.text)]
+    .filter(Boolean).join('\n\n')
+}
+"""
+RICH_PATCH = RICH_ANCHOR + """
+// multiclaude: rich messages. A formatted message (headings, lists, code, tables) comes as
+// rich_message with no text, so no other handler takes it: it reaches Claude as Markdown.
+// Added by multiclaude's bin/patch-telegram-plugin.
+bot.on('message', async (ctx, next) => {
+  const rich = (ctx.message as any).rich_message
+  if (!rich) return next()
+  await handleInbound(ctx, multiclaudeRichMarkdown(rich.blocks), undefined)
+})
+
+""" + RICH_MARKDOWN
+HELP_ANCHOR = """bot.command('help', async ctx => {
+  if (!dmCommandGate(ctx)) return
+"""
+HELP_PATCH = """bot.command('help', async (ctx, next) => {
+  // multiclaude: /help. A paired sender's /help goes on to Claude like any message, for the
+  // router to answer. Added by multiclaude's bin/patch-telegram-plugin.
+  const gated = dmCommandGate(ctx)
+  if (!gated) return
+  if (gated.access.allowFrom.includes(gated.senderId)) return next()
+"""
+
+
+@dataclass
+class Patch:
+    marker: str        # in the code once the patch is in
+    edits: list        # (anchor, replacement): each anchor must occur exactly once
+    broken: str        # what stops working without it, for the owner
+    addon: str = ""    # the add-in it's part of, applied only while that is on; "" for the core's
+
+    @property
+    def name(self):
+        return self.marker.split(": ", 1)[1]
+
+
+PATCHES = [
+    Patch("multiclaude: tg ask buttons", [(ASK_ANCHOR, ASK_PATCH)],
+          "Buttons from tg ask won't respond; typed answers still work"),
+    Patch("multiclaude: replies", [(REPLY_HELPER_ANCHOR, REPLY_HELPER_PATCH), (REPLY_META_ANCHOR, REPLY_META_PATCH)],
+          "Assistants won't see which message a reply answers"),
+    Patch("multiclaude: locations",
+          [(LOCATION_HANDLERS_ANCHOR, LOCATION_HANDLERS_PATCH), (LOCATION_META_ANCHOR, LOCATION_META_PATCH)],
+          "Shared locations won't reach the assistants", addon="locations"),
+    Patch("multiclaude: rich messages", [(RICH_ANCHOR, RICH_PATCH)],
+          "Formatted messages (headings, lists, code) won't reach the assistants"),
+    Patch("multiclaude: /help", [(HELP_ANCHOR, HELP_PATCH)],
+          "/help shows the plugin's pairing help instead of the router's"),
+]
+
+
+def notify_once(version, problem):
+    try:
+        with open(NOTIFIED) as f:
+            if version in f.read().split():
+                return
+    except OSError:
+        pass
+    try:
+        subprocess.run([f"{ROOT}/bin/assistant", "notify",
+                        f"⚠️ Telegram plugin {version} changed, so {ROOT}/bin/patch-telegram-plugin "
+                        f"couldn't patch it. {problem} until the patch is updated."],
+                       timeout=60, check=True)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"telling the owner about telegram plugin {version} failed: {e}", file=sys.stderr)
+        return  # try again next time
+    os.makedirs(os.path.dirname(NOTIFIED), exist_ok=True)
+    with open(NOTIFIED, "a") as f:
+        f.write(version + "\n")
+
+
+def main():
+    patches = [patch for patch in PATCHES if not patch.addon or patch.addon in addons_on()]
+    fitted = True
+    for path in sorted(glob.glob(f"{PLUGIN}/*/server.ts")):
+        fitted &= patch_version(path, os.path.basename(os.path.dirname(path)), patches)
+    return 0 if fitted else 1
+
+
+def addons_on():
+    """The add-ins config.json turns on."""
+    try:
+        with open(CONFIG) as f:
+            listed = json.load(f).get("addons")
+    except (OSError, ValueError, AttributeError):
+        return set()
+    return set(listed) if isinstance(listed, list) else set()
+
+
+def patch_version(path, version, patches):
+    """Rebuild a version's server.ts from its original with patches. Whether every patch fit."""
+    with open(path) as f:
+        current = f.read()
+    original = keep_original(version, current)
+    if original is None:
+        print(f"telegram plugin {version}: patched, but its original isn't in {ORIGINALS}; "
+              "reinstall the plugin to patch it again", file=sys.stderr)
+        return False
+    patched, fitted = original, True
+    for patch in patches:
+        if any(patched.count(anchor) != 1 for anchor, _ in patch.edits):
+            print(f"telegram plugin {version}: code for {patch.marker!r} not found; not patched", file=sys.stderr)
+            notify_once(f"{version}:{patch.marker}", patch.broken)
+            fitted = False
+            continue
+        for anchor, replacement in patch.edits:
+            patched = patched.replace(anchor, replacement)
+    if patched != current:
+        write(path, patched)
+        applied = [patch.name for patch in patches if patch.marker in patched]
+        print(f"telegram plugin {version}: patched for {', '.join(applied) or 'nothing'}")
+    return fitted
+
+
+def keep_original(version, code):
+    """The version's server.ts as installed. Code without a patch is that, and is kept (a plugin
+    update may bring a new copy of the same version); patched code is rebuilt from the copy kept,
+    None if there is none."""
+    kept = f"{ORIGINALS}/{version}-server.ts"
+    if MARKER in code:
+        return read(kept)
+    if read(kept) != code:
+        os.makedirs(ORIGINALS, exist_ok=True)
+        with open(kept, "w") as f:
+            f.write(code)
+    return code
+
+
+def read(path):
+    """A file's text, or None if it can't be read."""
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def write(path, code):
+    """Replace the file at once, keeping its mode."""
+    with open(f"{path}.tmp", "w") as f:
+        f.write(code)
+    os.chmod(f"{path}.tmp", os.stat(path).st_mode)
+    os.replace(f"{path}.tmp", path)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

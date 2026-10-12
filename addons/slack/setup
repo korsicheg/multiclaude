@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Run by `assistant addon enable slack`: checks the Slack app's tokens are saved, and puts the
+# assistants' `slack` command on the PATH (README.md, Setup).
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR source=../../bin/common.sh
+. "$(dirname "$(readlink -f "$0")")/../../bin/common.sh"
+
+TOKENS="$ROOT/state/slack.json"
+
+for key in bot_token signing_secret; do
+  [ -n "$(jq -r --arg k "$key" '.[$k] // empty' "$TOKENS" 2>/dev/null)" ] ||
+    { echo "error: no $key in $TOKENS yet: see $ROOT/addons/slack/README.md, Setup" >&2; exit 1; }
+done
+mkdir -p "$HOME/.local/bin"
+ln -sf "$ROOT/addons/slack/slack" "$HOME/.local/bin/slack"

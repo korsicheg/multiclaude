@@ -1,0 +1,121 @@
+{
+  "display_information": {
+    "name": "BOT_NAME",
+    "description": "BOT_NAME, the same one as on Telegram.",
+    "background_color": "#2c2d30"
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": false,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "BOT_NAME",
+      "always_online": true
+    },
+    "slash_commands": [
+      {
+        "command": "/clear",
+        "description": "Start a fresh conversation with BOT_NAME",
+        "should_escape": false,
+        "url": "https://RELAY_HOST/slack"
+      },
+      {
+        "command": "/restart",
+        "description": "Restart BOT_NAME with a new conversation, a harder /clear",
+        "should_escape": false,
+        "url": "https://RELAY_HOST/slack"
+      },
+      {
+        "command": "/stop",
+        "description": "Stop what BOT_NAME is doing, like Esc",
+        "should_escape": false,
+        "url": "https://RELAY_HOST/slack"
+      },
+      {
+        "command": "/usage",
+        "description": "Plan usage and cost",
+        "should_escape": false,
+        "url": "https://RELAY_HOST/slack"
+      },
+      {
+        "command": "/model",
+        "description": "Switch BOT_NAME's model",
+        "usage_hint": "[opus|sonnet|haiku] [default]",
+        "should_escape": false,
+        "url": "https://RELAY_HOST/slack"
+      },
+      {
+        "command": "/effort",
+        "description": "Switch BOT_NAME's effort",
+        "usage_hint": "[low|medium|high|xhigh|max] [default]",
+        "should_escape": false,
+        "url": "https://RELAY_HOST/slack"
+      },
+      {
+        "command": "/plugin",
+        "description": "Plugins and marketplaces, Claude Code syntax",
+        "usage_hint": "install <plugin>@<marketplace>",
+        "should_escape": false,
+        "url": "https://RELAY_HOST/slack"
+      },
+      {
+        "command": "/skills",
+        "description": "Your skills",
+        "usage_hint": "[off|on <name>]",
+        "should_escape": false,
+        "url": "https://RELAY_HOST/slack"
+      },
+      {
+        "command": "/mcp",
+        "description": "Your MCP servers, Claude Code syntax",
+        "usage_hint": "[add|remove|login|reconnect …]",
+        "should_escape": false,
+        "url": "https://RELAY_HOST/slack"
+      },
+      {
+        "command": "/help",
+        "description": "What you can send BOT_NAME, the commands, its MCPs",
+        "should_escape": false,
+        "url": "https://RELAY_HOST/slack"
+      }
+    ]
+  },
+  "oauth_config": {
+    "redirect_urls": [
+      "https://RELAY_HOST/slack/oauth"
+    ],
+    "scopes": {
+      "bot": [
+        "chat:write",
+        "commands",
+        "files:read",
+        "files:write",
+        "im:history",
+        "im:read",
+        "im:write",
+        "reactions:write",
+        "users:read"
+      ],
+      "user": [
+        "chat:write"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "message.im"
+      ],
+      "request_url": "https://RELAY_HOST/slack"
+    },
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://RELAY_HOST/slack"
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}

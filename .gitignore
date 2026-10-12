@@ -1,0 +1,14 @@
+# Secrets and per-person data: each install's own (README, "What's not in this repo")
+.env
+config.json
+users.json
+state/
+logs/
+.claude/settings.local.json
+
+# Caches and build output
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+node_modules/
+relay/.wrangler/

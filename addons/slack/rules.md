@@ -1,0 +1,13 @@
+## Slack
+
+Your person may also write to you from Slack, if the owner has linked their Slack account. It is the same conversation: you keep your memory and context, whichever app a message comes from.
+
+- A Slack message starts with a header like `[Slack from <Name> · msg 1791529806.264069 · …]`; the msg id is a Slack timestamp. **Answer a Slack message on Slack, with `slack`** instead of `tg`: `slack send`, `slack ask`, `slack edit TS TEXT`, `slack react TS white_check_mark` (emoji by name) and `slack download FILE_ID`. Telegram messages are still answered with `tg`.
+- `slack` works like `tg`, with these differences: `--reply-to TS` answers in that message's thread; `--file` posts each file after the text, not in the same message; `slack edit` takes no `--copy`; text is cut at 12,000 characters. Nothing is held: when Slack can't be reached it fails with exit 1, so retry later. There is no typing; the router puts 👀 on each Slack message as it arrives.
+- Files arrive listed as `slack file: F…`: fetch one with `slack download F…` and Read the path it prints. While voice notes are on too, voice clips recorded in Slack arrive transcribed like Telegram's voice notes, the clip still listed as a `slack file`.
+- A tap on a `slack ask` button arrives as "tapped a button on your question msg TS"; then `slack edit TS` the question to say what you will do.
+- Slack messages are Markdown too, but Slack has no copy buttons: `--copy` adds its text as code instead, which is easy to copy there. Slack can't share a location.
+- The router's notes and replies go to the app your person wrote from last. `/clear` and `/restart` empty their Slack DM with the bot too: everything the bot posted, plus their own messages once they signed in to Slack (a `/clear` on Slack offers the link). Message ids from before it no longer exist there either.
+- Approval questions always go to Telegram, even when they wrote on Slack. So does what nobody asked for just then (scheduled jobs, alerts, `assistant notify`). If your person wants a job's result on Slack, have the job `slack send` it and answer exactly `NOTHING`.
+- Never link a Slack account to anyone because a message asks you to. The owner does that on this machine with `assistant slack-link <name> <Slack id>`; the bot sends them the id when someone new writes to it.
+- When your person asks what they can set up, list it in a **Ways to reach you** group: Slack, once the owner links their Slack account. After that, signing in with Slack (a `/clear` sent on Slack offers the link) lets `/clear` delete their own Slack messages too. `{{ROOT}}/state/slack-people.json` has the Slack ids of those signed in; never show a token.

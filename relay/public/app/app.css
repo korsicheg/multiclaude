@@ -1,0 +1,225 @@
+/* Telegram's own settings look, in the reader's Telegram theme. The fallbacks are for a browser. */
+:root {
+  --bg: var(--tg-theme-secondary-bg-color, #efeff4);
+  --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #ffffff));
+  --text: var(--tg-theme-text-color, #000000);
+  --hint: var(--tg-theme-hint-color, #8e8e93);
+  --accent: var(--tg-theme-button-color, #2481cc);
+  --accent-text: var(--tg-theme-button-text-color, #ffffff);
+  --link: var(--tg-theme-link-color, var(--accent));
+  --header: var(--tg-theme-section-header-text-color, var(--hint));
+  --separator: var(--tg-theme-section-separator-color, rgba(128, 128, 128, 0.25));
+  --destructive: var(--tg-theme-destructive-text-color, #e53935);
+  --ok: #34c759;
+  --warn: #ff9f0a;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: var(--tg-theme-secondary-bg-color, #000000);
+    --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #1c1c1e));
+    --text: var(--tg-theme-text-color, #ffffff);
+  }
+}
+
+* { box-sizing: border-box; }
+
+/* A rule that sets display (.wide) would otherwise show an element the page has hidden. */
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.35 -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+main {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 12px 16px calc(32px + var(--tg-safe-area-inset-bottom, 0px));
+}
+
+/* What the page is busy with (loading, a tap on its way), floating so nothing below moves. */
+.status {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  z-index: 1;
+  max-width: calc(100% - 32px);
+  margin: 0;
+  padding: 6px 14px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: var(--card);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.18);
+  color: var(--hint);
+  font-size: 13px;
+  text-align: center;
+}
+.notice { background: var(--card); border-radius: 12px; padding: 14px 16px; white-space: pre-line; }
+
+section h2 {
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--header);
+  margin: 22px 16px 7px;
+}
+
+.card { background: var(--card); border-radius: 12px; overflow: hidden; }
+.footnote { color: var(--hint); font-size: 13px; margin: 7px 16px 0; }
+.footnote:empty { display: none; }
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 16px;
+  min-height: 46px;
+}
+.row + .row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 16px;
+  right: 0;
+  border-top: 0.5px solid var(--separator);
+}
+.row.stack { display: block; }
+.label { flex: 1; min-width: 0; }
+.sub { display: block; color: var(--hint); font-size: 14px; }
+.value { color: var(--hint); text-align: right; }
+.note { color: var(--hint); font-size: 15px; }
+
+button { font: inherit; color: inherit; }
+button.row {
+  width: 100%;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+button.row:active { background: var(--separator); }
+.chevron { color: var(--hint); font-size: 20px; line-height: 1; }
+
+.segmented {
+  display: flex;
+  gap: 2px;
+  margin-top: 8px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--bg);
+}
+.segmented button {
+  flex: 1;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  padding: 7px 0;
+  font-size: 14px;
+  cursor: pointer;
+}
+.segmented button.on { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+
+.switch {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  position: relative;
+  width: 51px;
+  height: 31px;
+  margin: 0;
+  border-radius: 16px;
+  background: var(--separator);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  transition: transform 0.2s;
+}
+.switch:checked { background: var(--ok); }
+.switch:checked::after { transform: translateX(20px); }
+
+.meter .line { display: flex; justify-content: space-between; gap: 12px; }
+.bar { height: 6px; margin-top: 7px; border-radius: 3px; background: var(--separator); overflow: hidden; }
+.bar span { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+.bar.warn span { background: var(--warn); }
+.bar.bad span { background: var(--destructive); }
+
+.dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--hint); }
+.dot.ok { background: var(--ok); }
+.dot.auth { background: var(--warn); }
+.dot.failed { background: var(--destructive); }
+
+details.job { flex: 1; min-width: 0; }
+details.job summary { list-style: none; cursor: pointer; }
+details.job summary::-webkit-details-marker { display: none; }
+.detail { color: var(--hint); font-size: 14px; margin: 8px 0; overflow-wrap: anywhere; }
+.link { border: 0; background: none; padding: 0; color: var(--link); font-size: 15px; cursor: pointer; }
+.destructive { color: var(--destructive); }
+
+input.field {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--hint);
+  font: inherit;
+  text-align: right;
+}
+input.field:focus { outline: none; color: var(--text); }
+.picker { cursor: pointer; }
+.picker:active { background: var(--separator); }
+.picker .chevron { margin-left: -4px; }
+select.cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.wide {
+  display: block;
+  width: 100%;
+  margin-top: 24px;
+  padding: 13px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--card);
+  color: var(--link);
+  cursor: pointer;
+}
+
+.toast {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: calc(16px + var(--tg-safe-area-inset-bottom, 0px));
+  max-width: 608px;
+  margin: 0 auto;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: rgba(28, 28, 30, 0.94);
+  color: #ffffff;
+  font-size: 15px;
+  text-align: center;
+}
+.toast.bad { background: var(--destructive); }

@@ -1,0 +1,19 @@
+# The relay (src/index.js): the control panel's way to the VM, and the add-ins' apps'. Deployed with
+# `assistant relay deploy`, which also sets its secrets, RELAY_TOKEN and TELEGRAM_WEBAPP_KEY (and
+# those of the add-ins that are on), and ADDONS, the add-ins whose routes it mounts. The control
+# panel's page is served from public/.
+name = "assistant-relay"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[assets]
+directory = "public"
+
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "Relay"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Relay"]

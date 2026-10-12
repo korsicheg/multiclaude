@@ -1,0 +1,242 @@
+"""Tests for the control panel's VM side: router/panel.py and cronjobs.py. The relay's side is
+tested in relay/test/panel.test.js."""
+import time
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from conftest import ALICE_CHAT, CRONTAB, TOKEN, last_snapshot, read_json, signed, tap, write_json
+
+# --- who opened it ---
+
+def test_init_data_telegram_signed_names_its_sender(r, panel):
+    assert r.panel_module.signed_sender(signed(ALICE_CHAT), TOKEN, time.time()) == ALICE_CHAT
+
+
+@pytest.mark.parametrize("init_data", [
+    signed(ALICE_CHAT, token="999:another-bot"),
+    signed(ALICE_CHAT, auth_date=int(time.time()) - 2 * 24 * 3600),
+    signed(ALICE_CHAT).replace("first_name", "last_name"),
+    "user=%7B%22id%22%3A100%7D",
+    "",
+])
+def test_init_data_not_signed_by_telegram_for_this_bot_names_no_one(r, panel, init_data):
+    assert r.panel_module.signed_sender(init_data, TOKEN, time.time()) is None
+
+
+def test_a_request_nobody_here_signed_changes_nothing(r, panel):
+    panel.handle({"init_data": signed(ALICE_CHAT, token="999:another-bot"), "id": "x", "action": "setting",
+                  "args": {"field": "timezone", "value": "Asia/Tokyo"}})
+    assert read_json(r.paths.USERS)["alice"].get("timezone") is None
+    assert r.pushed == []
+
+
+# --- /config ---
+
+def test_config_sends_a_button_that_opens_the_panel(r, desk, panel):
+    desk.inbound({"type": "queue-operation", "operation": "enqueue", "content":
+                  f'<channel source="plugin:telegram:telegram" chat_id="{ALICE_CHAT}" message_id="7" user="a" '
+                  f'user_id="{ALICE_CHAT}" ts="2026-10-11T21:00:00.000Z">\n/config\n</channel>'})
+    method, params = r.api_calls[-1]
+    assert method == "sendRichMessage" and params["chat_id"] == ALICE_CHAT
+    assert params["reply_markup"] == {"inline_keyboard": [[
+        {"text": "⚙️ Open the control panel", "web_app": {"url": "https://relay.test/app/"}}]]}
+
+
+def test_the_button_by_the_message_box_opens_the_panel_for_everyone(r, panel):
+    r.panel_module.set_menu_button()
+    assert r.api_calls[-1] == ("setChatMenuButton", {"menu_button": {
+        "type": "web_app", "text": "Panel", "web_app": {"url": "https://relay.test/app/"}}})
+
+
+# --- what it shows ---
+
+def test_opening_the_panel_puts_a_snapshot_then_another_with_the_servers_checked(r, panel):
+    tap(panel, "refresh")
+
+    assert [url for url, _, _ in r.pushed] == ["https://relay.test/panel/100"] * 2
+    assert r.pushed[0][1] == "vm-token"
+    first, second = r.pushed[0][2], r.pushed[1][2]
+    assert first["mcp"]["checking"] and not second["mcp"]["checking"]
+    assert [(s["name"], s["health"]) for s in second["mcp"]["servers"]] == [("google", "ok"), ("maps", "auth")]
+    assert second["answer"] == {"id": "t-refresh", "ok": True, "text": ""}
+    assert second["person"] == {"display": "Alice", "timezone": "UTC"}
+    assert (second["bot"], second["addons"]) == ("Claude", [])
+    assert second["usage"]["plan"] == [{"label": "5-hour", "used": 12.0, "resets": 1_791_540_000.0}]
+    assert second["claude"]["models"] == ["opus", "sonnet", "haiku", "fable"]
+    assert (second["claude"]["saved_model"], second["claude"]["saved_effort"]) == (None, None)
+
+
+def test_the_panel_lists_only_the_persons_own_jobs_with_their_next_run(r, panel):
+    tap(panel, "refresh")
+    jobs = last_snapshot(r)["jobs"]
+    assert [(j["title"], j["paused"]) for j in jobs] == [("Morning brief at 09:00 Helsinki", False),
+                                                         ("Invoice sync, Sundays 10:00 Helsinki", False)]
+    assert jobs[0]["detail"] == "Runs at 06 and 07 UTC"
+    assert jobs[1]["detail"] == "file new invoices"
+    assert datetime.fromtimestamp(jobs[0]["next"], ZoneInfo("Europe/Helsinki")).hour == 9
+
+
+def test_an_unchanged_panel_isnt_put_on_the_relay_again(r, desk, panel):
+    alice = desk.users["alice"]
+    panel.update(alice)
+    panel.update(alice)
+    assert len(r.pushed) == 1
+
+
+def test_a_change_is_put_on_the_relay_by_itself(r, desk, panel):
+    alice = desk.users["alice"]
+    panel.update(alice)
+    r.users_module.update("alice", "timezone", "Europe/Helsinki")
+    panel.update(alice)
+    assert [p["person"]["timezone"] for _, _, p in r.pushed] == ["UTC", "Europe/Helsinki"]
+
+
+def test_usage_counts_as_changed_only_in_steps(r, desk, panel, monkeypatch):
+    alice = desk.users["alice"]
+    context = {"used": 0}
+    monkeypatch.setattr(r.usage, "snapshot", lambda user: {"context_window": {
+        "total_input_tokens": context["used"], "context_window_size": 100_000}})
+    for used in (10_000, 12_000, 14_000, 16_000):
+        context["used"] = used
+        panel.update(alice)
+    assert [p["usage"]["context"]["percent"] for _, _, p in r.pushed] == [10, 16]
+
+
+def test_after_a_restart_the_router_remembers_what_it_put_on_the_relay(r, desk, panel):
+    alice = desk.users["alice"]
+    panel.refresh(alice, check_servers=True)
+    pushed = len(r.pushed)
+
+    restarted = r.panel_module.Panel(desk, desk.panel.later)
+    restarted.update(alice)
+    assert len(r.pushed) == pushed
+    assert restarted.snapshot(alice)["mcp"]["servers"] == last_snapshot(r)["mcp"]["servers"]
+
+
+def test_the_router_looks_for_changes_every_half_minute(r, desk, panel):
+    panel.tick(1000.0)
+    panel.tick(1010.0)
+    panel.tick(1031.0)
+    assert len(r.pushed) == 2  # alice and bob, once: the second look found nothing new
+
+
+# --- what it changes ---
+
+def test_a_setting_is_saved_in_the_persons_own_entry(r, panel):
+    tap(panel, "setting", field="timezone", value="Europe/Helsinki")
+    tap(panel, "setting", field="display", value=" Alicia ")
+
+    users = read_json(r.paths.USERS)
+    assert (users["alice"]["timezone"], users["alice"]["display"]) == ("Europe/Helsinki", "Alicia")
+    assert "timezone" not in users["bob"]
+    assert last_snapshot(r)["answer"] == {"id": "t-setting", "ok": True, "text": "Saved."}
+
+
+@pytest.mark.parametrize("field, value", [("timezone", "Mars/Olympus"), ("display", " "), ("role", "owner"),
+                                          ("quiet_hours", "00:00-09:00"), ("restore_model", True)])  # add-ins off
+def test_a_setting_it_cant_take_is_refused_and_says_why(r, panel, field, value):
+    before = read_json(r.paths.USERS)
+    tap(panel, "setting", field=field, value=value)
+    assert read_json(r.paths.USERS) == before
+    answer = last_snapshot(r)["answer"]
+    assert not answer["ok"] and answer["text"]
+
+
+def switches(desk):
+    return [(w.setting, w.target, w.keep) for w in desk.users["alice"].queue if type(w).__name__ == "Switch"]
+
+
+def test_a_model_switches_this_session_only_like_model_opus(r, desk, panel):
+    tap(panel, "model", target="sonnet", keep=False)
+    assert switches(desk) == [("model", "sonnet", False)]
+    assert desk.users["alice"].reply_to.app == "Telegram"
+
+
+def test_with_keep_a_model_is_also_kept_after_restarts_like_model_opus_default(r, desk, panel):
+    tap(panel, "model", target="haiku", keep=True)
+    assert switches(desk) == [("model", "haiku", True)]
+    assert last_snapshot(r)["answer"]["text"] == "Switching to haiku, also after restarts. Claude confirms in the chat."
+
+
+def test_max_effort_switches_this_session_only_even_with_keep(r, desk, panel):
+    tap(panel, "effort", target="max", keep=True)
+    assert switches(desk) == [("effort", "max", False)]
+    assert "can't keep max" in last_snapshot(r)["answer"]["text"]
+
+
+def test_the_panel_shows_the_model_running_now_and_the_one_after_a_restart(r, desk, panel, monkeypatch):
+    write_json(r.paths.workspace_settings("alice"), {"model": "opus[1m]", "effortLevel": "high"})
+    monkeypatch.setattr(r.usage, "snapshot", lambda user: {"model": {"display_name": "Sonnet 5.5"}, "effort": {"level": "low"}})
+    tap(panel, "refresh")
+    claude = last_snapshot(r)["claude"]
+    assert (claude["current_model"], claude["effort"]) == ("sonnet", "low")
+    assert (claude["saved_model"], claude["saved_effort"]) == ("opus", "high")
+
+
+def test_an_mcp_tap_runs_the_bots_own_mcp_command(r, desk, panel, monkeypatch):
+    commands = []
+    monkeypatch.setattr(desk, "dispatch", lambda user, msg, now: commands.append((user.name, msg.text)))
+    tap(panel, "mcp", command="reconnect", server="google")
+    tap(panel, "mcp", command="rm -rf", server="google")
+    assert commands == [("alice", "/mcp reconnect google")]
+    assert not last_snapshot(r)["answer"]["ok"]
+
+
+def test_pausing_a_job_comments_out_its_lines_and_resuming_puts_them_back(r, panel):
+    job = r.cronjobs.jobs("alice", CRONTAB)[0]
+
+    tap(panel, "job", command="pause", id=job.id)
+    paused = r.crontab[-1]
+    assert f'{r.cronjobs.PAUSED}0 6,7 * * * [ "$(TZ=Europe/Helsinki' in paused
+    assert r.cronjobs.jobs("alice", paused)[0].paused
+    assert last_snapshot(r)["jobs"][0]["paused"] and last_snapshot(r)["jobs"][0]["next"] is None
+
+    tap(panel, "job", command="resume", id=job.id)
+    assert r.crontab[-1] == CRONTAB
+
+
+def test_someone_elses_job_cant_be_paused(r, panel):
+    theirs = r.cronjobs.jobs("bob", CRONTAB)[0]
+    tap(panel, "job", command="pause", id=theirs.id)
+    assert r.crontab == [CRONTAB]
+    assert last_snapshot(r)["answer"] == {"id": "t-job", "ok": False, "text": "That job isn't in the crontab any more."}
+
+
+def test_deleting_a_job_is_asked_of_the_assistant(r, desk, panel):
+    job = r.cronjobs.jobs("alice", CRONTAB)[1]
+    tap(panel, "job", command="delete", id=job.id)
+
+    delivery = desk.users["alice"].queue[0]
+    assert delivery.header.startswith("[Control panel from Alice · ")
+    assert "# alice: invoice sync, Sundays 10:00 Helsinki" in delivery.body
+    assert 'assistant job --user alice "invoices"' in delivery.body
+    assert r.crontab == [CRONTAB]
+
+
+# --- cron schedules ---
+
+@pytest.mark.parametrize("line, after, expected", [
+    ("*/15 * * * * x", "2026-10-11 21:52", "2026-10-11 22:00"),
+    ("7-59/15 * * * * x", "2026-10-11 21:52", "2026-10-11 22:07"),
+    ("30 7 7 11 * x", "2026-10-11 21:52", "2026-11-07 07:30"),
+    ("0 9 1 * mon x", "2026-10-11 21:52", "2026-10-12 09:00"),  # day 1 or a Monday, whichever comes first
+    ("0 0 * * sun x", "2026-10-11 21:52", "2026-10-18 00:00"),
+    ("@daily x", "2026-10-11 21:52", "2026-10-12 00:00"),
+])
+def test_next_run_follows_cron(r, panel, line, after, expected):
+    start = datetime.fromisoformat(after).replace(tzinfo=timezone.utc)
+    assert r.cronjobs.Schedule.of(line).next_run(start) == datetime.fromisoformat(expected).replace(tzinfo=timezone.utc)
+
+
+def test_an_hour_check_keeps_the_local_hour_across_the_clock_change(r, panel):
+    line = '0 6,7 * * * [ "$(TZ=Europe/Helsinki date +\\%H)" = 09 ] && x'
+    summer = datetime(2026, 10, 20, 12, tzinfo=timezone.utc)
+    winter = datetime(2026, 11, 2, 12, tzinfo=timezone.utc)
+    assert r.cronjobs.Schedule.of(line).next_run(summer).hour == 6  # 09:00 at UTC+3
+    assert r.cronjobs.Schedule.of(line).next_run(winter).hour == 7  # 09:00 at UTC+2
+
+
+def test_a_job_run_at_reboot_has_no_next_run(r, panel):
+    assert r.cronjobs.Schedule.of("@reboot sleep 120 && x") is None

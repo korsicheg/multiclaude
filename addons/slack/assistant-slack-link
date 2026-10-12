@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# assistant slack-link <name> <Slack id>: link that user's Slack account (the id the bot sends you when they first DM it)
+# Run by bin/assistant while the slack add-in is on, so the person's DMs to the Slack bot reach
+# their own assistant. The router tells the owner the Slack id when someone new DMs the bot.
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR source=../../bin/common.sh
+. "$(dirname "$(readlink -f "$0")")/../../bin/common.sh"
+
+die() { echo "error: $*" >&2; exit 1; }
+
+name="${1:-}" id="${2:-}"
+[ -n "$name" ] && [[ "$id" =~ ^[UW][A-Z0-9]+$ ]] || die "usage: assistant slack-link <name> <Slack user id, U…>"
+[ "$(jq -r --arg n "$name" 'has($n)' "$USERS")" = true ] || die "no user '$name'; add them first: assistant add-user"
+other=$(jq -r --arg id "$id" --arg n "$name" 'to_entries[] | select(.value.slack_id == $id and .key != $n) | .key' "$USERS")
+[ -z "$other" ] || die "Slack id $id already belongs to '$other'"
+tmp=$(mktemp "$ROOT/.users.XXXXXX")
+jq --arg n "$name" --arg id "$id" '.[$n].slack_id = $id' "$USERS" > "$tmp"
+mv "$tmp" "$USERS"
+echo "Linked Slack $id to $name: their Slack DMs now reach their assistant."

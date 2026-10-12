@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Run before every commit and deploy: the tests (Python, and the relay's on Node), the Python
+# linter and shellcheck.
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")"
+
+SHELL_SCRIPTS=(bin/common.sh bin/assistant bin/run.sh bin/run-user.sh
+               addons/voice-notes/setup addons/slack/setup addons/slack/relay-deploy addons/slack/assistant-slack-link
+               system/statusline.sh system/claude-usage)
+
+uvx --quiet pytest -q
+node --test --disable-warning=ExperimentalWarning relay/test/*.test.js >/dev/null
+uvx --quiet ruff check --quiet
+shellcheck -x -S warning "${SHELL_SCRIPTS[@]}"
+echo "✔ all checks passed"

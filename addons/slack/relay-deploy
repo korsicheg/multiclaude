@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Run by `assistant relay deploy` while the slack add-in is on, in the relay's folder, with the
+# Cloudflare credentials, the pinned $WRANGLER and the relay's $RELAY_HOST: gives the Worker the
+# Slack app's signing secret, and writes the app's manifest with the relay's address in it.
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR source=../../bin/common.sh
+. "$(dirname "$(readlink -f "$0")")/../../bin/common.sh"
+
+TOKENS="$ROOT/state/slack.json"
+MANIFEST="$ROOT/state/slack-manifest.json"
+
+secret=$(jq -r '.signing_secret // empty' "$TOKENS" 2>/dev/null) || true
+[ -n "$secret" ] || { echo "error: no signing_secret in $TOKENS: see $ROOT/addons/slack/README.md" >&2; exit 1; }
+printf '%s' "$secret" | npx --yes "$WRANGLER" secret put SLACK_SIGNING_SECRET
+jq --arg host "$RELAY_HOST" --arg name "$(bot_name)" \
+  '(.. | strings) |= (gsub("RELAY_HOST"; $host) | gsub("BOT_NAME"; $name))' \
+  "$ROOT/addons/slack/slack-manifest.json" > "$MANIFEST"
+echo "Slack: paste $MANIFEST into the Slack app's App Manifest page, and save."

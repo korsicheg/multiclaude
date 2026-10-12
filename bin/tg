@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""tg: Telegram for the per-user assistants. They don't host the Telegram plugin (the front
+desk session does), so they reply with this. It talks to the chat in $TG_CHAT_ID (set by
+run-user.sh) unless --chat is given. Texts and questions are Markdown (GitHub-flavored), sent
+as Telegram rich messages: real headings, lists, tables, code blocks and collapsible sections.
+Telegram doesn't copy code in a rich message on tap, so each --copy TEXT adds a 📋 button under
+the message that copies TEXT; code formatting alone adds none. A highlight is sent as bold:
+Telegram's dark theme makes highlights unreadable.
+
+  tg send [--reply-to ID] [--file PATH]... [--copy TEXT]... [--separate] [TEXT]
+                                                    TEXT from stdin if omitted; files go below it,
+                                                    in the same message; prints message_id. With
+                                                    --separate, each file follows as a plain message
+                                                    of its own, which forwards alone; prints each id
+  tg ask QUESTION OPTION...                         question with one button per option; prints message_id
+  tg edit MESSAGE_ID [--copy TEXT]... TEXT          edit a message sent earlier (no push notification);
+                                                    its copy buttons are replaced by these
+  tg react MESSAGE_ID EMOJI                         Telegram's fixed emoji whitelist only
+  tg typing                                         show "typing…" for ~5 seconds
+  tg download FILE_ID [DIR]                         save an attachment; prints the path
+
+When Telegram can't be reached (the VM is offline), send (and an add-in's command that sends)
+holds the message instead and exits with 75: it goes out by itself, in order, once Telegram can
+be reached again.
+"""
+import os
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+from multiclaude import addons, paths, questions  # noqa: E402
+from multiclaude.telegram import (COPY_BUTTONS_MAX, COPY_TEXT_MAX, RICH_LIMIT, BotApi, ChatHistory,  # noqa: E402
+                                  TelegramError, copy_buttons, send_or_hold, split_text, without_highlights)
+
+API_TIMEOUT = 120
+EXIT_HELD = 75  # when a message was held for later (EX_TEMPFAIL)
+PHOTO_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+MAX_FILES = 50  # media in one rich message
+MAX_OPTIONS = 10
+
+
+class Usage(Exception):
+    pass
+
+
+class Tg:
+    def __init__(self, chat):
+        self.chat = chat
+        self.api = BotApi(timeout=API_TIMEOUT)
+        self.held = 0  # messages held because Telegram couldn't be reached
+
+    def need_chat(self):
+        if not self.chat:
+            raise TelegramError("no chat: set TG_CHAT_ID or pass --chat ID")
+
+    def sent(self, result):
+        """Record a sent message for /clear and print its id."""
+        ChatHistory(self.chat).remember(result["message_id"])
+        print(result["message_id"], flush=True)
+
+    def posted(self, result):
+        """What send_or_hold gave back: a sent message, or None for one held until Telegram can be reached."""
+        if result is None:
+            self.held += 1
+        else:
+            self.sent(result)
+
+    def send(self, args):
+        options = take_options(args, ("--reply-to", "--file", "--copy"), switches=("--separate",))
+        reply_to = options["--reply-to"][-1] if options["--reply-to"] else None
+        files, copy = options["--file"], copyable(options["--copy"])
+        missing = [f for f in files if not os.path.isfile(f)]
+        if missing:
+            raise TelegramError(f"no such file: {missing[0]}")
+        self.need_chat()
+        if len(files) > MAX_FILES:
+            raise TelegramError(f"at most {MAX_FILES} files per message")
+        text = " ".join(args) if args else sys.stdin.read() if not files or not sys.stdin.isatty() else ""
+        if not text.strip() and not files:
+            return
+        chunks = split_text(text) or [""]
+        for chunk in chunks[:-1]:
+            self.send_rich(chunk, reply_to=reply_to)
+            reply_to = None
+        if options["--separate"]:
+            self.send_separately(chunks[-1], files, reply_to, copy)
+        else:
+            self.send_rich(chunks[-1], files, reply_to, copy)
+
+    def send_rich(self, markdown, files=(), reply_to=None, copy=()):
+        """One rich message: the Markdown, then each file as a media block below it."""
+        markdown = without_highlights(markdown)
+        blocks, media, uploads = [markdown] if markdown else [], [], {}
+        for n, path in enumerate(files):
+            kind = file_kind(path)
+            blocks.append(f"![](tg://{kind}?id=m{n})")
+            media.append({"id": f"m{n}", "media": {"type": kind, "media": f"attach://file{n}"}})
+            uploads[f"file{n}"] = path
+        rich = {"markdown": "\n\n".join(blocks), **({"media": media} if media else {})}
+        self.posted(send_or_hold(self.api, "sendRichMessage", files=uploads or None, chat_id=self.chat,
+                                 rich_message=rich, reply_markup=copy_buttons(copy), reply_parameters=reply(reply_to)))
+
+    def send_separately(self, markdown, files, reply_to=None, copy=()):
+        """The Markdown on its own, then each file as a plain photo or document message, so each one
+        can be forwarded alone. The reply and the copy buttons go with the first message."""
+        if markdown.strip():
+            self.send_rich(markdown, reply_to=reply_to, copy=copy)
+            reply_to, copy = None, ()
+        for path in files:
+            kind = file_kind(path)
+            method = "sendPhoto" if kind == "photo" else "sendDocument"
+            self.posted(send_or_hold(self.api, method, files={kind: path}, chat_id=self.chat,
+                                     reply_markup=copy_buttons(copy), reply_parameters=reply(reply_to)))
+            reply_to, copy = None, ()
+
+    def ask(self, args):
+        if len(args) < 3:
+            raise Usage("tg ask QUESTION OPTION OPTION...")
+        question, options = without_highlights(args[0]), args[1:]
+        if len(options) > MAX_OPTIONS:
+            raise TelegramError(f"tg ask: at most {MAX_OPTIONS} options")
+        if len(question) > RICH_LIMIT:
+            raise TelegramError("tg ask: the question is too long; send the details first with tg send")
+        self.need_chat()
+        result = self.api.call("sendRichMessage", chat_id=self.chat, rich_message={"markdown": question},
+                               reply_markup=questions.option_buttons(options))
+        self.sent(result)
+        self.save_question(result["message_id"], question, options)
+
+    def save_question(self, message_id, question, options):
+        try:
+            questions.save(paths.ASKS / str(self.chat), message_id, question, options)
+        except OSError:
+            pass  # without it a tap still arrives, with the label Telegram shows
+
+    def edit(self, args):
+        message_id, args = args[:1], args[1:]
+        copy = copyable(take_options(args, ("--copy",))["--copy"])
+        if not message_id or not args:
+            raise Usage("tg edit MESSAGE_ID [--copy TEXT]... TEXT")
+        self.need_chat()
+        markdown = without_highlights(" ".join(args))
+        self.api.call("editMessageText", chat_id=self.chat, message_id=message_id[0],
+                      rich_message={"markdown": markdown}, reply_markup=copy_buttons(copy))
+
+    def react(self, args):
+        if len(args) != 2:
+            raise Usage("tg react MESSAGE_ID EMOJI")
+        self.need_chat()
+        self.api.call("setMessageReaction", chat_id=self.chat, message_id=args[0],
+                      reaction=[{"type": "emoji", "emoji": args[1]}])
+
+    def typing(self, args):
+        self.need_chat()
+        self.api.call("sendChatAction", chat_id=self.chat, action="typing")
+
+    def download(self, args):
+        if not args:
+            raise Usage("tg download FILE_ID [DIR]")
+        folder = Path(args[1] if len(args) > 1 else Path.cwd() / "inbox")
+        file_path = self.api.call("getFile", file_id=args[0])["file_path"]
+        folder.mkdir(parents=True, exist_ok=True)
+        dest = folder / f"{time.strftime('%Y%m%d-%H%M%S')}-{Path(file_path).name}"
+        self.api.download(file_path, dest)
+        print(dest)
+
+
+def take_options(args, flags, switches=()):
+    """Take the leading options off args, up to a "--": {flag: [its values, in order]} for each
+    flag, and {switch: whether it was given} for each switch, which takes no value."""
+    options = {flag: [] for flag in flags} | {switch: False for switch in switches}
+    while args and (args[0] in options or args[0] == "--"):
+        flag = args.pop(0)
+        if flag == "--":
+            break
+        if flag in switches:
+            options[flag] = True
+            continue
+        if not args:
+            raise Usage(f"{flag} needs a value")
+        options[flag].append(args.pop(0))
+    return options
+
+
+def copyable(texts):
+    """texts for 📋 buttons; TelegramError if a button can't hold one."""
+    if len(texts) > COPY_BUTTONS_MAX:
+        raise TelegramError(f"--copy: at most {COPY_BUTTONS_MAX} per message")
+    for text in texts:
+        if not text.strip():
+            raise TelegramError("--copy: the text is empty")
+        if len(text) > COPY_TEXT_MAX:
+            raise TelegramError(f"--copy: a button holds at most {COPY_TEXT_MAX} characters; "
+                                "send longer text in a code block or as a file")
+    return texts
+
+
+def file_kind(path):
+    """How Telegram shows a file: a "photo" for a picture, a "document" for anything else."""
+    return "photo" if Path(path).suffix.lower() in PHOTO_SUFFIXES else "document"
+
+
+def reply(message_id):
+    return {"message_id": int(message_id), "allow_sending_without_reply": True} if message_id else None
+
+
+COMMANDS = {"send": Tg.send, "ask": Tg.ask, "edit": Tg.edit, "react": Tg.react, "typing": Tg.typing,
+            "download": Tg.download}
+
+
+def commands():
+    """tg's own commands and those of the add-ins that are on (tg_commands), which can't replace one of tg's."""
+    added = {name: fn for offered in addons.call("tg_commands") for name, fn in (offered or {}).items()}
+    return {**added, **COMMANDS}
+
+
+def usage(available):
+    """What tg takes: its own commands, then each add-in's, from its docstring."""
+    added = [f"  {fn.__doc__.strip()}" for name, fn in available.items() if name not in COMMANDS and fn.__doc__]
+    return "\n".join([__doc__.split("\n\n", 1)[1].rstrip(), *added])
+
+
+def main(args):
+    chat = os.environ.get("TG_CHAT_ID", "")
+    if args[:1] == ["--chat"] and len(args) > 1:
+        chat, args = args[1], args[2:]
+    available = commands()
+    if not args or args[0] not in available:
+        print(usage(available))
+        return 2
+    tg = Tg(chat)
+    try:
+        available[args[0]](tg, args[1:])
+    except (Usage, ValueError) as e:
+        print(f"usage: {e}", file=sys.stderr)
+        return 1
+    except (TelegramError, OSError) as e:
+        print(f"tg: {e}", file=sys.stderr)
+        return 1
+    if tg.held:
+        print(held_note(tg.held), file=sys.stderr)
+        return EXIT_HELD
+    return 0
+
+
+def held_note(count):
+    messages = "1 message is" if count == 1 else f"{count} messages are"
+    return (f"tg: Telegram can't be reached right now (is the VM offline?), so {messages} held and will go out "
+            "by itself, in order, once it can. Don't send it again.")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

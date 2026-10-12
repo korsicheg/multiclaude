@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""slack: Slack for the per-user assistants, the way tg is Telegram (the slack add-in, which links
+it into ~/.local/bin). It talks to the person's DM with the bot: the person is $ASSISTANT_USER (set
+by run-user.sh), their Slack id comes from users.json, unless --chat CHANNEL is given. Texts and
+questions are Markdown, as with tg. Slack has no copy buttons; code in a message is easy to copy
+there, so --copy is accepted and its text shown as code when the message doesn't already contain it.
+
+  slack send [--reply-to TS] [--file PATH]... [--copy TEXT]... [TEXT]
+                                         TEXT from stdin if omitted; files are posted after it;
+                                         --reply-to answers in that message's thread; prints its ts
+  slack ask QUESTION OPTION...           question with one button per option; prints its ts
+  slack edit TS TEXT                     edit a message sent earlier
+  slack react TS EMOJI                   a reaction by name, such as eyes or white_check_mark
+  slack download FILE_ID [DIR]           save a file the person sent; prints the path
+"""
+import os
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
+
+from multiclaude import questions  # noqa: E402
+from multiclaude import users as registry  # noqa: E402
+from multiclaude.addons.slack import api as slack  # noqa: E402
+
+MAX_OPTIONS = 10
+
+
+class Usage(Exception):
+    pass
+
+
+class Slack:
+    def __init__(self, channel):
+        self.channel = channel
+        self.api = slack.bot()
+
+    def send(self, args):
+        options = take_options(args, ("--reply-to", "--file", "--copy"))
+        thread = options["--reply-to"][-1] if options["--reply-to"] else None
+        files = options["--file"]
+        missing = [f for f in files if not os.path.isfile(f)]
+        if missing:
+            raise slack.SlackError(f"no such file: {missing[0]}")
+        text = " ".join(args) if args else sys.stdin.read() if not files or not sys.stdin.isatty() else ""
+        text = slack.with_code(text, options["--copy"])
+        ts = slack.post(self.channel, text, self.api, thread) if text.strip() else None
+        for path in files:
+            self.api.upload(self.channel, path, thread=thread)
+        if ts:
+            print(ts, flush=True)
+
+    def ask(self, args):
+        if len(args) < 3:
+            raise Usage("slack ask QUESTION OPTION OPTION...")
+        question, options = args[0], args[1:]
+        if len(options) > MAX_OPTIONS:
+            raise slack.SlackError(f"slack ask: at most {MAX_OPTIONS} options")
+        result = self.api.call("chat.postMessage", channel=self.channel, text=question,
+                               blocks=slack.question_blocks(question, options))
+        questions.save(slack.asks_folder(self.channel), result["ts"], question, options)
+        print(result["ts"], flush=True)
+
+    def edit(self, args):
+        if len(args) < 2:
+            raise Usage("slack edit TS TEXT")
+        self.api.call("chat.update", channel=self.channel, ts=args[0], markdown_text=" ".join(args[1:]))
+
+    def react(self, args):
+        if len(args) != 2:
+            raise Usage("slack react TS EMOJI")
+        self.api.call("reactions.add", channel=self.channel, timestamp=args[0], name=args[1].strip(":"))
+
+    def download(self, args):
+        if not args:
+            raise Usage("slack download FILE_ID [DIR]")
+        info = self.api.call("files.info", file=args[0])["file"]
+        folder = Path(args[1] if len(args) > 1 else Path.cwd() / "inbox")
+        folder.mkdir(parents=True, exist_ok=True)
+        dest = folder / f"{time.strftime('%Y%m%d-%H%M%S')}-{Path(info.get('name') or args[0]).name}"
+        self.api.download(info["url_private_download"], dest)
+        print(dest)
+
+
+def take_options(args, flags):
+    """Take the leading options off args, up to a "--": {flag: [its values, in order]}."""
+    options = {flag: [] for flag in flags}
+    while args and (args[0] in options or args[0] == "--"):
+        flag = args.pop(0)
+        if flag == "--":
+            break
+        if not args:
+            raise Usage(f"{flag} needs a value")
+        options[flag].append(args.pop(0))
+    return options
+
+
+def own_channel():
+    """The DM of the person this assistant serves ($ASSISTANT_USER)."""
+    name = os.environ.get("ASSISTANT_USER", "")
+    person = registry.load_users().get(name)
+    if not person or not slack.slack_id(person):
+        raise slack.SlackError(f"no Slack id for {name or '$ASSISTANT_USER'} in users.json; pass --chat CHANNEL")
+    return slack.dm_channel(slack.slack_id(person))
+
+
+COMMANDS = {"send": Slack.send, "ask": Slack.ask, "edit": Slack.edit, "react": Slack.react, "download": Slack.download}
+
+
+def main(args):
+    channel = None
+    if args[:1] == ["--chat"] and len(args) > 1:
+        channel, args = args[1], args[2:]
+    if not args or args[0] not in COMMANDS:
+        print(__doc__.split("\n\n", 1)[1].rstrip())
+        return 2
+    try:
+        COMMANDS[args[0]](Slack(channel or own_channel()), args[1:])
+    except Usage as e:
+        print(f"usage: {e}", file=sys.stderr)
+        return 1
+    except (slack.SlackError, OSError, ValueError) as e:
+        print(f"slack: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
