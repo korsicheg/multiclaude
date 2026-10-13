@@ -15,7 +15,7 @@ def test_patches_the_handler_once_and_keeps_the_original(tmp_path):
     server = plugin_version(tmp_path, "0.0.7")
 
     code, output = patch(tmp_path)
-    assert code == 0 and output == "telegram plugin 0.0.7: patched for tg ask buttons, replies, rich messages, /help\n"
+    assert code == 0 and output == "telegram plugin 0.0.7: patched for tg ask buttons, replies, rich messages, /help, single poller\n"
     patched = server.read_text()
     assert patched.count("multiclaude: tg ask buttons") == 1
     assert "/^ask:\\d+$/.test(data)" in patched
@@ -117,16 +117,26 @@ def test_rich_messages_reach_claude(tmp_path):
     assert handler.index("if (!rich) return next()") < handler.index("multiclaudeRichMarkdown(rich.blocks)")
 
 
-def rich_markdown(tmp_path, blocks):
-    """What the patch's TypeScript makes of a rich message's blocks, run on Node."""
+def patcher():
     loader = SourceFileLoader("patch_telegram_plugin", str(BIN / "patch-telegram-plugin"))
-    patcher = module_from_spec(spec_from_loader(loader.name, loader))
-    loader.exec_module(patcher)
-    script = tmp_path / "rich.ts"
-    script.write_text(patcher.RICH_MARKDOWN + "process.stdout.write(multiclaudeRichMarkdown(JSON.parse(process.argv[2])))\n")
-    r = subprocess.run(["node", "--disable-warning=ExperimentalWarning", str(script), json.dumps(blocks)],
+    module = module_from_spec(spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+def run_ts(tmp_path, code, *args):
+    """What TypeScript code prints, run on Node."""
+    script = tmp_path / "patch.ts"
+    script.write_text(code)
+    r = subprocess.run(["node", "--disable-warning=ExperimentalWarning", str(script), *args],
                        capture_output=True, text=True, timeout=30, check=True)
     return r.stdout
+
+
+def rich_markdown(tmp_path, blocks):
+    """What the patch's TypeScript makes of a rich message's blocks."""
+    return run_ts(tmp_path, patcher().RICH_MARKDOWN + "process.stdout.write(multiclaudeRichMarkdown(JSON.parse(process.argv[2])))\n",
+                  json.dumps(blocks))
 
 
 def test_a_rich_message_keeps_its_headings_lists_and_inline_formatting(tmp_path):
@@ -176,3 +186,50 @@ def test_a_rich_message_keeps_tables_code_quotes_details_and_the_file_ids_of_its
         "(document: bill.pdf · file_id: DOC)\n\nJune\n\n"
         "(photo · file_id: LARGE)\n\n"
         "(map: 52.52, 13.4)")
+
+
+def test_only_a_channel_session_takes_over_and_polls(tmp_path):
+    server = plugin_version(tmp_path, "0.0.7")
+
+    assert patch(tmp_path)[0] == 0
+    patched = server.read_text()
+    assert patched.index("const MULTICLAUDE_POLLS = ") < patched.index("mkdirSync(STATE_DIR")
+    assert "if (MULTICLAUDE_POLLS && stale > 1 && stale !== process.pid) {" in patched
+    assert "if (MULTICLAUDE_POLLS) writeFileSync(PID_FILE, String(process.pid))" in patched
+    loop = patched[patched.index("void (async () => {"):]
+    assert loop.index("if (!MULTICLAUDE_POLLS) return") < loop.index("await bot.start()")
+
+
+def started_as_channel(tmp_path, ps):
+    """What the patch's TypeScript says of the server whose parent is pid 30, with ps as
+    `ps -o ppid=,args=` for each pid; a pid not in it fails like ps on a dead process."""
+    return run_ts(tmp_path, patcher().STARTED_AS_CHANNEL + """
+const table = JSON.parse(process.argv[2])
+process.stdout.write(String(multiclaudeStartedAsChannel(30, pid => {
+  if (!(pid in table)) throw new Error('no such process')
+  return table[pid]
+})))
+""", json.dumps(ps)) == "true"
+
+
+BUN_RUN = "20 /home/x/.bun/bin/bun run --cwd /home/x/.claude/plugins/cache/claude-plugins-official/telegram/0.0.7 start"
+
+
+def test_the_front_desk_polls(tmp_path):
+    assert started_as_channel(tmp_path, {
+        30: BUN_RUN, 20: "10 claude --channels plugin:telegram@claude-plugins-official --name assistant"})
+    assert started_as_channel(tmp_path, {
+        30: BUN_RUN, 20: "10 /home/x/.local/share/claude/versions/2.1.296 --channels=plugin:telegram@claude-plugins-official"})
+
+
+def test_another_claude_session_only_gets_the_tools(tmp_path):
+    assert not started_as_channel(tmp_path, {30: BUN_RUN, 20: "10 claude mcp list"})
+    assert not started_as_channel(tmp_path, {30: BUN_RUN, 20: "10 node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js -p hi"})
+    assert not started_as_channel(tmp_path, {  # the plugin named only in its settings, as user sessions are started
+        30: BUN_RUN, 20: '10 claude --settings {"enabledPlugins":{"telegram@claude-plugins-official":false}}'})
+
+
+def test_a_server_whose_client_cant_be_told_polls_as_the_plugin_always_did(tmp_path):
+    assert started_as_channel(tmp_path, {30: BUN_RUN, 20: "1 some-other-mcp-client --serve"})
+    assert started_as_channel(tmp_path, {30: BUN_RUN})  # its launcher gone, ps fails
+    assert started_as_channel(tmp_path, {30: "1 /home/x/.bun/bin/bun run start"})  # reparented to init

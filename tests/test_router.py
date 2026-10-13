@@ -1660,3 +1660,64 @@ def test_restart_fresh_ends_claude_and_asks_its_run_loop_for_a_new_conversation(
     assert respawn[-3:] == (str(r.paths.BIN / "run-user.sh"), "alice", "fresh")
     assert not alice.turn.busy and alice.pid is None
 
+
+# --- the front desk's poller -------------------------------------------------------------------
+
+PS = "\n".join(["  10     1 claude --channels plugin:telegram@claude-plugins-official",
+                "  11    10 bun run --cwd /p start", "  12    11 /home/x/.bun/bin/bun server.ts",
+                "  20     1 claude mcp list", "  21    20 bun run --cwd /p start", "  22    21 bun server.ts",
+                "  30    10 sleep 99"])
+
+
+def test_the_poller_must_be_a_server_under_the_front_desk(r):
+    assert r.poller.poller_under(PS, 12, 10)
+    assert not r.poller.poller_under(PS, 22, 10)  # another session's copy took over
+    assert not r.poller.poller_under(PS, 30, 10)  # its pid reused by something else
+    assert not r.poller.poller_under(PS, 99, 10)  # gone
+
+
+def test_no_pid_file_means_no_poller(r):
+    assert not r.poller.polling(10)  # the poller removes it as it exits
+
+
+def watch(r, desk, monkeypatch, proc=(10, 600), polls=False):
+    """The desk's PollerWatch, with the front desk's claude at proc and its poller there or not;
+    it returns the restarts it hands to the background."""
+    monkeypatch.setattr(desk.desk, "claude_proc", lambda: proc)
+    monkeypatch.setattr(r.poller, "polling", lambda pid: polls)
+    restarts = []
+    return desk.poller, lambda now: desk.poller.tick(now, desk.users["alice"], lambda what, fn, *args: restarts.append(args)), restarts
+
+
+def test_a_front_desk_without_a_poller_is_restarted_and_the_owner_told(r, desk, monkeypatch):
+    _, tick, restarts = watch(r, desk, monkeypatch)
+
+    tick(1000)
+    tick(1000 + r.poller.DOWN_AFTER - r.poller.CHECK_EVERY)
+    assert restarts == [] and sent(r) == []  # it may be starting one
+
+    tick(1000 + r.poller.DOWN_AFTER)
+    assert restarts == [(10,)]
+    assert sent(r, ALICE_CHAT) == [r.poller.RESTARTED.format(bot="Claude")]
+
+
+def test_a_restart_that_didnt_help_waits_before_the_next(r, desk, monkeypatch):
+    _, tick, restarts = watch(r, desk, monkeypatch)
+    for now in range(1000, 1000 + r.poller.RESTART_GAP, r.poller.CHECK_EVERY):
+        tick(now)
+    assert len(restarts) == 1
+    tick(1000 + r.poller.DOWN_AFTER + r.poller.RESTART_GAP)
+    assert len(restarts) == 2
+
+
+def test_a_poller_coming_back_or_a_front_desk_starting_counts_as_fine(r, desk, monkeypatch):
+    poller, tick, restarts = watch(r, desk, monkeypatch)
+    tick(1000)
+    monkeypatch.setattr(r.poller, "polling", lambda pid: True)
+    tick(1000 + r.poller.CHECK_EVERY)
+    assert poller.missing_since is None
+
+    monkeypatch.setattr(desk.desk, "claude_proc", lambda: None)
+    for now in range(1000, 1000 + 2 * r.poller.DOWN_AFTER, r.poller.CHECK_EVERY):
+        tick(now)
+    assert restarts == []

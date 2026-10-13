@@ -342,7 +342,23 @@ HELP = """bot.command('help', async ctx => {
 })
 """
 
-PLUGIN = HANDLER + INBOUND + TEXT + HELP
+TAKEOVER = """mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
+try {
+  const stale = parseInt(readFileSync(PID_FILE, 'utf8'), 10)
+  if (stale > 1 && stale !== process.pid) {
+    process.kill(stale, 'SIGTERM')
+  }
+} catch {}
+writeFileSync(PID_FILE, String(process.pid))
+"""
+POLL_LOOP = """void (async () => {
+  for (let attempt = 1; ; attempt++) {
+    await bot.start()
+  }
+})()
+"""
+
+PLUGIN = TAKEOVER + HANDLER + INBOUND + TEXT + HELP + POLL_LOOP
 
 
 def plugin_version(home, version, code=PLUGIN):
@@ -406,10 +422,10 @@ def r(tmp_path, monkeypatch):
     """The router's modules with every location in tmp_path, and tmux and the Bot API recorded."""
     fresh_multiclaude_in(tmp_path, monkeypatch)
     from multiclaude import paths, telegram, tmux
-    from multiclaude.router import (about, asks, claude_ui, desk, inbound, limits, plugins, recovery, session, switching,
-                                    upgrade, usage, work)
+    from multiclaude.router import (about, asks, claude_ui, desk, inbound, limits, plugins, poller, recovery, session,
+                                    switching, upgrade, usage, work)
     r = SimpleNamespace(paths=paths, telegram=telegram, tmux=tmux, about=about, asks=asks, claude_ui=claude_ui, desk=desk,
-                        messages=inbound, limits=limits, plugins=plugins, recovery=recovery, session=session,
+                        messages=inbound, limits=limits, plugins=plugins, poller=poller, recovery=recovery, session=session,
                         switching=switching, upgrade=upgrade, usage=usage, work=work,
                         api_calls=[], keystrokes=[], unreachable=False)
 

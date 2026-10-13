@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Patch the Telegram plugin for the router.
 
-The plugin owns the bot's getUpdates, so only it sees what Telegram sends. Five patches:
+The plugin owns the bot's getUpdates, so only it sees what Telegram sends. Six patches:
 
 - tg ask buttons: the plugin drops button taps (callback queries) that aren't its own
   permission buttons. This adds a branch for callback data "ask:<n>" (what `tg ask` puts on
@@ -22,6 +22,12 @@ The plugin owns the bot's getUpdates, so only it sees what Telegram sends. Five 
 - /help: the plugin answers /help itself with its pairing help. From a paired sender this
   passes it on to Claude like any message instead, so the router answers it; others still get
   the plugin's text.
+- single poller: Telegram allows one getUpdates poller per bot, and the plugin, starting,
+  kills whichever poller its pid file names. Any session in ~/assistant starts the plugin, so
+  a `claude mcp list` run there killed the front desk's poller, then exited, leaving the bot
+  deaf. This lets only a session started with the plugin as its channel (--channels
+  plugin:telegram@…, the front desk) poll or take over; any other gets the tools only. When
+  the session can't be told, it polls, as the plugin always did.
 
 The plugin lives in Claude Code's plugin cache, which a plugin update replaces
 with a fresh copy, so run.sh runs this before every front desk start. It keeps
@@ -297,6 +303,52 @@ HELP_PATCH = """bot.command('help', async (ctx, next) => {
   if (!gated) return
   if (gated.access.allowFrom.includes(gated.senderId)) return next()
 """
+TAKEOVER_ANCHOR = """mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
+try {
+  const stale = parseInt(readFileSync(PID_FILE, 'utf8'), 10)
+  if (stale > 1 && stale !== process.pid) {
+"""
+STARTED_AS_CHANNEL = r"""// multiclaude: single poller. Whether the Claude Code session that started this server has
+// it as its channel (--channels plugin:telegram@…): only that one polls Telegram. Climbs
+// past `bun run`, the plugin's launcher, to the client; true when it can't tell, as the
+// plugin always polled. ps(pid) gives `ps -o ppid=,args=` for a pid.
+// Added by multiclaude's bin/patch-telegram-plugin.
+function multiclaudeStartedAsChannel(pid: number, ps: (pid: number) => string): boolean {
+  try {
+    for (let hops = 0; pid > 1 && hops < 5; hops++) {
+      const [ppid = '', ...args] = ps(pid).trim().split(/\s+/)
+      const exe = (args[0] ?? '').split('/').pop() ?? ''
+      if (exe === 'bun') {
+        pid = parseInt(ppid, 10)
+        continue
+      }
+      const claude = exe === 'claude' || /^\d+\.\d+\.\d+$/.test(exe) || /claude-code/.test(args[1] ?? '')
+      return !claude || args.some(arg => /(^|[=,])plugin:telegram@/.test(arg))
+    }
+  } catch {}
+  return true
+}
+"""
+TAKEOVER_PATCH = STARTED_AS_CHANNEL + """const MULTICLAUDE_POLLS = multiclaudeStartedAsChannel(process.ppid, pid =>
+  execFileSync('ps', ['-p', String(pid), '-o', 'ppid=,args='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }))
+if (!MULTICLAUDE_POLLS) process.stderr.write('telegram channel: not this session\\'s channel; tools only, not polling\\n')
+
+mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
+try {
+  const stale = parseInt(readFileSync(PID_FILE, 'utf8'), 10)
+  if (MULTICLAUDE_POLLS && stale > 1 && stale !== process.pid) {  // multiclaude: single poller
+"""
+PID_FILE_ANCHOR = """writeFileSync(PID_FILE, String(process.pid))
+"""
+PID_FILE_PATCH = """if (MULTICLAUDE_POLLS) writeFileSync(PID_FILE, String(process.pid))  // multiclaude: single poller
+"""
+POLL_LOOP_ANCHOR = """void (async () => {
+  for (let attempt = 1; ; attempt++) {
+"""
+POLL_LOOP_PATCH = """void (async () => {
+  if (!MULTICLAUDE_POLLS) return  // multiclaude: single poller
+  for (let attempt = 1; ; attempt++) {
+"""
 
 
 @dataclass
@@ -323,6 +375,9 @@ PATCHES = [
           "Formatted messages (headings, lists, code) won't reach the assistants"),
     Patch("multiclaude: /help", [(HELP_ANCHOR, HELP_PATCH)],
           "/help shows the plugin's pairing help instead of the router's"),
+    Patch("multiclaude: single poller",
+          [(TAKEOVER_ANCHOR, TAKEOVER_PATCH), (PID_FILE_ANCHOR, PID_FILE_PATCH), (POLL_LOOP_ANCHOR, POLL_LOOP_PATCH)],
+          "A `claude` command run in ~/assistant can stop the bot hearing messages"),
 ]
 
 

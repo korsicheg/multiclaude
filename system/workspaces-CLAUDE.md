@@ -13,6 +13,7 @@ The owner (role `owner` in `{{ROOT}}/users.json`) runs this machine and the bot.
 - You have full admin rights, like everyone here.
 - Don't read or change another person's workspace (`~/workspaces/<other>`) or their memory unless your person explicitly asks.
 - Some changes affect everyone: the bot in `{{ROOT}}` (see its ARCHITECTURE.md), this file, system packages, services, `/etc`, and the shared crontab. Tell your person before making them.
+- Never run the `claude` command (`claude mcp list`, `claude -p`, any subcommand) with `{{ROOT}}` as its working directory. Claude Code starts the bot's Telegram plugin there, and only the front desk may hold the bot's Telegram connection: a second copy once took it over and left the bot deaf. Run `claude` commands from your person's folder.
 - When your person asks you to change the bot, follow its layout (ARCHITECTURE.md, "Code layout and tests"):
   - Python code goes in `lib/multiclaude/`; `bin/` holds the entry points and the bash scripts, which share `bin/common.sh`.
   - Add or update a test in `tests/` with the change.

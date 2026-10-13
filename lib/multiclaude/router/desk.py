@@ -11,8 +11,8 @@ from multiclaude import addons, bot, jsonfile, paths, telegram
 from multiclaude import users as registry
 from multiclaude.channels import TelegramChat
 from multiclaude.log import log
-from multiclaude.router import (about, asks, limits, mcp_login, panel, plugins, recovery, relay_entrance, switching, usage,
-                                work)
+from multiclaude.router import (about, asks, limits, mcp_login, panel, plugins, poller, recovery, relay_entrance, switching,
+                                usage, work)
 from multiclaude.router import inbound as messages
 from multiclaude.router.session import Session
 from multiclaude.router.upgrade import Upgrader
@@ -65,6 +65,7 @@ class Desk:
         self.workers = {}                # session name -> the Worker for its queue
         self.limits = limits.LimitAlerts()
         self.upgrader = Upgrader()
+        self.poller = poller.PollerWatch(self.desk)
         self.network = recovery.Network(recovery.targets())
         self.next_send_held = 0.0        # no look for held messages before this time
         self.panel = panel.Panel(self, lambda fn, *args: self.background("the control panel", fn, *args))
@@ -151,6 +152,7 @@ class Desk:
         self.panel.tick(now)
         self.reset_desk(now)
         self.upgrader.tick(now, [self.desk, *self.users.values()], self.users.get(self.owner))
+        self.poller.tick(now, self.users.get(self.owner), self.background)
 
     def tend(self, user, now):
         """One poll's work for one person: follow their assistant (add-ins see each new transcript
