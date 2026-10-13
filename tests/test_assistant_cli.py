@@ -1,5 +1,7 @@
 """Tests for the `assistant` CLI's setup, notify, job and addon, with a fake claude, systemctl, sudo
 and crontab and a fake Bot API."""
+import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -59,6 +61,17 @@ class Home:
         path = self.root / "logs" / "jobs.log"
         return path.read_text() if path.exists() else ""
 
+    def jobs_err(self):
+        path = self.root / "logs" / "jobs.err"
+        return path.read_text() if path.exists() else ""
+
+    @property
+    def runs_record(self):
+        return self.root / "state" / "job-runs" / "alice.jsonl"
+
+    def runs(self):
+        """Alice's recorded job runs, oldest first."""
+        return [json.loads(line) for line in self.runs_record.read_text().splitlines()]
 
     def system_calls(self):
         log = self.fake.home / "system.log"
@@ -208,6 +221,110 @@ def test_a_job_still_running_is_not_started_again(home):
     assert len(home.fake.calls) == 1
     assert "still running" in home.jobs_log()
     assert home.sent() == ["slow one"]
+
+
+# --- each run's record, for the control panel's Activity ---
+
+def test_a_job_run_is_recorded_with_its_title_outcome_cost_and_the_start_of_its_answer(home):
+    answer = "Rain at 5pm. " + "Take an umbrella. " * 30
+    home.fake.on(["-p"], stdout=job_answer(answer, cost=0.12))
+    before = time.time()
+
+    home.run("job", "--user", "alice", "check the weather\n\nThe details, at length…")
+
+    [run] = home.runs()
+    assert before - 1 <= run["started"] <= run["finished"] <= time.time()
+    assert (run["title"], run["outcome"], run["cost_usd"]) == ("check the weather", "sent", 0.12)
+    assert run["preview"] == answer[:300]
+
+
+def test_a_run_with_nothing_to_say_is_recorded_without_a_preview(home):
+    home.fake.on(["-p"], stdout=job_answer("NOTHING"))
+    home.run("job", "--user", "alice", "anything new?")
+    [run] = home.runs()
+    assert run["outcome"] == "nothing" and "preview" not in run
+
+
+def test_a_run_is_titled_by_its_first_line_cut_as_the_failure_notice_cuts_it(home):
+    home.fake.on(["-p"], stdout=job_answer("NOTHING"))
+    home.run("job", "--user", "alice", "é" * 150)
+    assert home.runs()[0]["title"] == "é" * 99 + "…"
+
+
+def test_a_failed_run_is_recorded_with_why_it_failed(home):
+    home.fake.on(["-p"], rc=1)
+    home.run("job", "--user", "alice", "do it")
+    [run] = home.runs()
+    assert run["outcome"] == "failed" and "cost_usd" not in run
+    assert run["preview"] == "Claude Code stopped with exit code 1; details in ~/assistant/logs/jobs.err."
+
+
+def test_a_failed_run_keeps_claude_codes_own_error_and_what_it_cost(home):
+    home.fake.on(["-p"], rc=1, stdout=json.dumps(
+        {"result": "API Error: 529 Overloaded", "is_error": True, "total_cost_usd": 0.03, "session_id": "s2"}))
+    home.run("job", "--user", "alice", "do it")
+
+    [run] = home.runs()
+    assert (run["outcome"], run["preview"], run["cost_usd"]) == ("failed", "API Error: 529 Overloaded", 0.03)
+    assert home.sent() == ["Scheduled job failed: do it (details in ~/assistant/logs/jobs.err)"]
+    assert json.loads((home.home / ".claude" / "state" / "costs" / "job-s2.json").read_text())["last"] == 0.03
+
+
+def test_a_run_whose_answer_telegram_refused_is_recorded_as_failed_with_the_answer(home):
+    home.fake.on(["-p"], stdout=job_answer("Rain at 5pm."))
+    home.api.fail["sendRichMessage"] = "Bad Request: chat not found"
+
+    assert home.run("job", "--user", "alice", "check the weather").returncode != 0
+
+    [run] = home.runs()
+    assert (run["outcome"], run["preview"]) == ("failed", "Couldn't send it on Telegram: Rain at 5pm.")
+
+
+def test_a_run_skipped_while_the_last_one_still_goes_is_recorded(home):
+    key = hashlib.sha256(b"alice\nslow task").hexdigest()[:16]
+    lock = home.root / "state" / "jobs" / f"{key}.lock"
+    lock.parent.mkdir(parents=True)
+    with open(lock, "w") as running:
+        fcntl.flock(running, fcntl.LOCK_EX)
+        home.run("job", "--user", "alice", "slow task")
+
+    assert home.fake.calls == []
+    [run] = home.runs()
+    assert (run["title"], run["outcome"]) == ("slow task", "skipped")
+
+
+def test_only_the_last_200_runs_are_kept(home):
+    home.runs_record.parent.mkdir(parents=True)
+    home.runs_record.write_text("".join(
+        json.dumps({"started": n, "finished": n, "title": "old", "outcome": "nothing"}) + "\n" for n in range(200)))
+    home.fake.on(["-p"], stdout=job_answer("NOTHING"))
+
+    home.run("job", "--user", "alice", "anything new?")
+
+    runs = home.runs()
+    assert len(runs) == 200
+    assert runs[0]["started"] == 1 and runs[-1]["title"] == "anything new?"
+
+
+def test_a_record_that_isnt_json_still_gets_the_run(home):
+    home.runs_record.parent.mkdir(parents=True)
+    home.runs_record.write_text("not json\n{broken")
+    home.fake.on(["-p"], stdout=job_answer("Rain at 5pm."))
+
+    assert home.run("job", "--user", "alice", "check the weather").returncode == 0
+
+    assert home.sent() == ["Rain at 5pm."]
+    assert json.loads(home.runs_record.read_text().splitlines()[-1])["outcome"] == "sent"
+
+
+def test_a_record_that_cant_be_written_never_costs_the_answer(home):
+    home.runs_record.mkdir(parents=True)  # a folder where the file should be
+    home.fake.on(["-p"], stdout=job_answer("Rain at 5pm."))
+
+    assert home.run("job", "--user", "alice", "check the weather").returncode == 0
+
+    assert home.sent() == ["Rain at 5pm."]
+    assert "alice: can't record the job run" in home.jobs_err()
 
 
 def test_reload_plugins_leaves_a_request_for_the_router(home):

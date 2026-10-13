@@ -5,14 +5,20 @@ A paused job's lines stay in the crontab commented out behind PAUSED, so resumin
 exactly as they were."""
 import hashlib
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass
 from datetime import timedelta, timezone
+from itertools import takewhile
+from pathlib import PurePath
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from multiclaude import jsonfile, paths
 
 PAUSED = "#⏸ "
+JOB_OPTIONS = ("--user", "--tools", "--deny", "--model")  # `assistant job`'s options, each followed by its value
+SHELL_OPERATOR_RE = re.compile(r"[();<>|&]+")  # ends a shell command's words: ";", "&&", "|", ">>"…
+UNESCAPED_PERCENT_RE = re.compile(r"(?<!\\)%")
 CRONTAB_LOCK = paths.STATE / "crontab.lock"  # the router's own crontab edits, one at a time
 LOOK_AHEAD_DAYS = 400  # a job that runs less often than this shows no next run
 NICKNAMES = {"@yearly": "0 0 1 1 *", "@annually": "0 0 1 1 *", "@monthly": "0 0 1 * *", "@weekly": "0 0 * * 0",
@@ -141,6 +147,46 @@ class Job:
             return None
         runs = [s.next_run(after) for s in map(Schedule.of, self.lines) if s]
         return min((run for run in runs if run), default=None)
+
+    @property
+    def prompts(self):
+        """The instructions its lines give `assistant job`, as the job gets them."""
+        found = (job_prompt(command_of(line)) for line in self.lines)
+        return [prompt for prompt in found if prompt]
+
+
+def command_of(line):
+    """What a crontab line has the shell run: cron passes what follows the first % that isn't
+    escaped as its input, and makes each \\% a %."""
+    line = line.removeprefix(PAUSED).strip()
+    fields = 2 if line.startswith("@") else 6  # a nickname or five time fields, then the command
+    parts = line.split(None, fields - 1)
+    command = parts[-1] if len(parts) == fields else ""
+    return UNESCAPED_PERCENT_RE.split(command, maxsplit=1)[0].replace("\\%", "%")
+
+
+def job_prompt(command):
+    """The instructions `assistant job` gets in a shell command, or None when it runs no job. Its
+    words are split and unquoted as by shlex, which is near enough to the shell for instructions in
+    quotes; it leaves \\$ and \\` in double quotes as they are."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        words = list(lexer)
+    except ValueError:  # a quote that isn't closed
+        return None
+    for at, word in enumerate(words):
+        if PurePath(word).name == "assistant" and words[at + 1:at + 2] == ["job"]:
+            return prompt_in(words[at + 2:])
+    return None
+
+
+def prompt_in(args):
+    """`assistant job`'s instructions in its arguments: the words after its options, up to the
+    command's end, joined as the job joins them."""
+    while args[:1] and args[0] in JOB_OPTIONS:
+        args = args[2:]
+    return " ".join(takewhile(lambda word: not SHELL_OPERATOR_RE.fullmatch(word), args))
 
 
 def job_id(purpose):

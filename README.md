@@ -160,7 +160,7 @@ The login is kept in `~/.config/claude-usage/credentials.json` and refreshes by 
 
 ### The control panel and the relay
 
-`/config` opens the control panel, a Telegram Mini App where each person sees their usage and changes their model, effort, name, timezone, scheduled jobs and MCP servers. It is served by the relay, a Cloudflare Worker on the free plan, which also holds the panel's taps until the router collects them, so nothing is lost while the machine is offline. The router connects out to it, so nothing on the machine is reachable from the internet.
+`/config` opens the control panel, a Telegram Mini App where each person sees their usage and what their scheduled jobs did, and changes their model, effort, name, timezone, scheduled jobs and MCP servers. It is served by the relay, a Cloudflare Worker on the free plan, which also holds the panel's taps until the router collects them, so nothing is lost while the machine is offline. The router connects out to it, so nothing on the machine is reachable from the internet.
 
 1. In Cloudflare, create an API token from the **Edit Cloudflare Workers** template, and note your account id.
 2. Save them, readable only by you:
@@ -223,7 +223,7 @@ A person's entry in `users.json` can also hold `"timezone"` (an IANA name such a
 | `/mcp`, `/mcp add …`, `/mcp login name`, `/mcp remove name` … | Your MCP servers, with Claude Code's syntax (`/mcp help` lists it all). Never shared: each person connects their own accounts. `/mcp login` sends a sign-in link and takes the address your browser lands on. |
 | `/reload-plugins`, `/reload-plugins --force` | Reloads your assistant's plugins, skills and MCP servers once it's idle. A reload that changes MCP tools costs the prompt cache, so Claude Code holds it back until it comes with `--force`. Not in Telegram's command menu, which takes no hyphens. |
 | `/help` | What you can send the bot, the other ways you can reach it, and these commands. Then your assistant sends what it can do with your MCP servers. |
-| `/config` | A button that opens the control panel (so does the **Panel** button by the message box): model and effort, context and plan limits, your scheduled jobs (pause, resume, delete), your MCP servers (reconnect, sign in, turn off), your plugins and skills (on or off, as `/plugin enable|disable` and `/skills on|off`), and your name and timezone. It needs the relay. |
+| `/config` | A button that opens the control panel (so does the **Panel** button by the message box): model and effort, context and plan limits, your scheduled jobs (pause, resume, delete) and what they did (each run's outcome, cost and the start of its answer, with today's and the week's totals), your MCP servers (reconnect, sign in, turn off), your plugins and skills (on or off, as `/plugin enable|disable` and `/skills on|off`), and your name and timezone. It needs the relay. |
 
 With `default`, `/model` and `/effort` write `model` or `effortLevel` into that person's `~/workspaces/<name>/.claude/settings.json`, which wins over the shared `~/.claude/settings.json`; the shared file is never changed. `max` effort can only be set for one session, because Claude Code doesn't save it.
 
@@ -256,7 +256,7 @@ assistant addon list|enable|disable
 
 `assistant restart` stops every tmux session, so everyone's assistant restarts (each resumes its conversation). For a router change, restart only the router: `sudo systemctl restart assistant-watcher`. It routes the messages that arrived while it was down.
 
-- **Logs:** the router logs to `journalctl -u assistant-watcher`. Jobs log to `~/assistant/logs/jobs.log` (errors in `jobs.err`), the shared sync to `logs/shared.log`.
+- **Logs:** the router logs to `journalctl -u assistant-watcher`. Jobs log to `~/assistant/logs/jobs.log` (errors in `jobs.err`), and each run's outcome, cost and the start of its answer to `state/job-runs/<name>.jsonl` (each person's last 200, shown in the control panel's Activity); the shared sync logs to `logs/shared.log`.
 - **Scheduled jobs:** each assistant adds its own cron lines (`assistant job --user <name> "…"`), each under a `# <name>:` comment and listed in that person's `~/workspaces/<name>/jobs.md`. `assistant job` runs `claude -p` in the person's folder, at most one run of the same job at a time and for up to an hour, and sends its final answer unless that is exactly `NOTHING`, which makes "only tell me if…" jobs possible. `--model` runs a job on another model than the person's saved one, and `--deny` forbids tools outright (sending mail, say).
 - **Plugins, skills and marketplaces:** each assistant installs them only in its person's own `~/workspaces/<name>/.claude/`. Once everyone has the same one, `assistant shared sync` moves it to `~/.claude` and deletes the copies. If someone turns a shared one off for themselves, it moves back into everyone else's folder. When you add a person, everything shared moves back into the folders of the people who had it, so the newcomer starts with none of it. The owner gets a message for each move. The bot's `/plugin` and `/mcp` commands run with the `env` from the person's own `.claude/settings.json`, so a login kept there, such as their own GitHub login for a private marketplace, works for them too.
 

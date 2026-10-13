@@ -7,6 +7,8 @@ ACCESS="$TELEGRAM_DIR/access.json"
 export LC_ALL=C.UTF-8
 
 JOB_TIMEOUT=3600  # seconds; a scheduled job still running after this is stopped
+RUNS_KEPT=200     # each person's latest job runs kept for the control panel's Activity
+PREVIEW_MAX=300   # characters of a run's answer kept with it
 TG_HELD=75        # tg's exit code when Telegram was out of reach and it holds the message to send later
 JOB_PROMPT='You are running as a scheduled job, not a live chat. Your final response is sent to the user on Telegram verbatim, so make it the message itself: no preamble, in Markdown as described under "Formatting" in your instructions. To send files as well, use `tg send --file PATH`. If there is nothing worth telling the user, respond with exactly NOTHING.'
 
@@ -341,15 +343,16 @@ cmd_status() {
   tm capture-pane -p -t assistant 2>/dev/null | grep -v '^[[:space:]]*$' | tail -8 || echo "(not running)"
 }
 
-# What a failure notice calls a job: its prompt's first line, cut short, since a job built from an
-# instructions file (and the data gathered for it) can run to pages.
+# What a failure notice and the job's runs call a job: its prompt's first line, cut short, since a
+# job built from an instructions file (and the data gathered for it) can run to pages. The control
+# panel finds a job's runs by it (lib/multiclaude/jobruns.py builds it the same way).
 job_title() {
   local first=${1%%$'\n'*}
   if [ "${#first}" -gt 100 ]; then printf '%s…' "${first:0:99}"; else printf '%s' "$first"; fi
 }
 
 cmd_job() {
-  local user prompt out ws id
+  local user prompt ws id title started output answer outcome status=0 sending=0 preview="" cost=""
   local -a claude_options=()
   user=$(pick_user "$@"); [ "${1:-}" = "--user" ] && shift 2
   # The job's own limits, each one of Claude Code's flags:
@@ -370,11 +373,14 @@ cmd_job() {
   ws="$HOME/workspaces/$user"
   id=$(user_field "$user" telegram_id)
   [ -n "$id" ] && [ -d "$ws" ] || die "unknown user '$user' (see $USERS)"
+  title=$(job_title "$prompt")
+  started=$(date +%s)
   mkdir -p "$ROOT/logs" "$ROOT/state/jobs"
   # One run of a job at a time, so a slow run doesn't pile up behind the next cron tick.
   exec 8>"$ROOT/state/jobs/$(printf '%s\n%s' "$user" "$prompt" | sha256sum | cut -c1-16).lock"
   if ! flock -n 8; then
     printf '=== %s | %s | %s\n(skipped: the previous run is still running)\n\n' "$(date -Is)" "$user" "$prompt" >> "$ROOT/logs/jobs.log"
+    record_job_run "$user" "$started" "$title" skipped
     return 0
   fi
   load_env
@@ -382,26 +388,76 @@ cmd_job() {
   # load the Telegram plugin: a second copy would take over the live bot, and a
   # failed one makes Claude skip the plugin at the next start. The prompt goes in
   # on stdin, so one starting with "-" isn't taken for an option.
-  out=$(cd "$ws" && printf '%s' "$prompt" | TG_CHAT_ID="$id" ASSISTANT_USER="$user" \
-          timeout "$JOB_TIMEOUT" claude -p --output-format json \
-          --settings "$TELEGRAM_PLUGIN_OFF" \
-          --permission-mode auto --permission-prompts none --no-session-persistence \
-          "${claude_options[@]}" --append-system-prompt "$JOB_PROMPT" 2>>"$ROOT/logs/jobs.err") \
-    || out="Scheduled job failed: $(job_title "$prompt") (details in ~/assistant/logs/jobs.err)"
-  # The JSON result carries the answer and what the job cost. The cost goes into the same
-  # per-session ledger the status line keeps for live sessions (the total in /usage).
-  if jq -e 'type == "object" and has("result")' >/dev/null 2>&1 <<<"$out"; then
-    jq -c --arg name "$user" --arg dir "$ws" 'select((.total_cost_usd // 0) > 0)
-      | {session_id: ("job-" + (.session_id // (now | tostring))), name: $name, dir: $dir,
-         base: 0, last: .total_cost_usd, since: (now | floor), updated: (now | floor)}' <<<"$out" 2>/dev/null \
-      | while read -r line; do
-          f="$HOME/.claude/state/costs/$(jq -r .session_id <<<"$line" | tr -cd 'A-Za-z0-9_.-').json"
-          mkdir -p "${f%/*}" && printf '%s\n' "$line" > "$f"
-        done || true  # never let bookkeeping cost the user their answer
-    out=$(jq -r '.result // empty' <<<"$out")
+  output=$(cd "$ws" && printf '%s' "$prompt" | TG_CHAT_ID="$id" ASSISTANT_USER="$user" \
+             timeout "$JOB_TIMEOUT" claude -p --output-format json \
+             --settings "$TELEGRAM_PLUGIN_OFF" \
+             --permission-mode auto --permission-prompts none --no-session-persistence \
+             "${claude_options[@]}" --append-system-prompt "$JOB_PROMPT" 2>>"$ROOT/logs/jobs.err") \
+    || status=$?
+  # The JSON result carries the answer and what the job cost, a failed job's too. The cost goes into
+  # the same per-session ledger the status line keeps for live sessions (the total in /usage).
+  answer=$output
+  if jq -e 'type == "object" and has("result")' >/dev/null 2>&1 <<<"$output"; then
+    cost=$(jq -r '.total_cost_usd | numbers' <<<"$output")
+    record_job_cost "$user" "$ws" "$output"
+    answer=$(jq -r '.result // empty' <<<"$output")
   fi
-  printf '=== %s | %s | %s\n%s\n\n' "$(date -Is)" "$user" "$prompt" "$out" >> "$ROOT/logs/jobs.log"
-  if [ -n "$out" ] && [ "$out" != "NOTHING" ]; then printf '%s' "$out" | cmd_notify --user "$user"; fi
+  if [ "$status" -ne 0 ]; then
+    outcome=failed preview=$(failure_reason "$status" "$answer")
+    answer="Scheduled job failed: $title (details in ~/assistant/logs/jobs.err)"
+  elif [ -z "$answer" ] || [ "$answer" = "NOTHING" ]; then
+    outcome=nothing
+  else
+    outcome=sent preview=$answer
+  fi
+  printf '=== %s | %s | %s\n%s\n\n' "$(date -Is)" "$user" "$prompt" "$answer" >> "$ROOT/logs/jobs.log"
+  if [ "$outcome" != nothing ] && ! printf '%s' "$answer" | cmd_notify --user "$user"; then
+    sending=1
+    [ "$outcome" = failed ] || outcome=failed preview="Couldn't send it on Telegram: $answer"
+  fi
+  record_job_run "$user" "$started" "$title" "$outcome" "$preview" "$cost"
+  return "$sending"
+}
+
+# Why a job failed, for its run's record: Claude Code's own error (its JSON result's text), else
+# how it ended.
+failure_reason() {
+  local status=$1 said=$2
+  if [ -n "$said" ]; then printf '%s' "$said"
+  elif [ "$status" -eq 124 ]; then printf 'Stopped after %s minutes, still not done.' "$((JOB_TIMEOUT / 60))"
+  else printf 'Claude Code stopped with exit code %s; details in ~/assistant/logs/jobs.err.' "$status"
+  fi
+}
+
+# record_job_cost USER WORKSPACE RESULT: the job's cost, from its JSON result, as a session of its
+# own in the cost ledger.
+record_job_cost() {
+  jq -c --arg name "$1" --arg dir "$2" 'select((.total_cost_usd // 0) > 0)
+    | {session_id: ("job-" + (.session_id // (now | tostring))), name: $name, dir: $dir,
+       base: 0, last: .total_cost_usd, since: (now | floor), updated: (now | floor)}' <<<"$3" 2>/dev/null \
+    | while read -r line; do
+        f="$HOME/.claude/state/costs/$(jq -r .session_id <<<"$line" | tr -cd 'A-Za-z0-9_.-').json"
+        mkdir -p "${f%/*}" && printf '%s\n' "$line" > "$f"
+      done || true  # never let bookkeeping cost the user their answer
+}
+
+# record_job_run USER STARTED TITLE OUTCOME [PREVIEW [COST]]: one line about a job run in USER's
+# record, for the control panel's Activity (lib/multiclaude/jobruns.py reads it), keeping their last
+# RUNS_KEPT. OUTCOME is sent, nothing, failed or skipped. A record it can't write is logged in
+# jobs.err and the job carries on: bookkeeping never costs anyone their answer.
+record_job_run() {
+  local user=$1 file="$ROOT/state/job-runs/$1.jsonl" run
+  {
+    run=$(jq -nc --argjson started "$2" --arg title "$3" --arg outcome "$4" --arg preview "${5:-}" \
+            --arg cost "${6:-}" --argjson max "$PREVIEW_MAX" \
+            '{started: $started, finished: (now | floor), title: $title, outcome: $outcome}
+             + (if $cost == "" then {} else {cost_usd: ($cost | tonumber)} end)
+             + (if $preview == "" then {} else {preview: $preview[:$max]} end)') &&
+      mkdir -p "${file%/*}" &&
+      (flock -w 10 9 &&  # the kept lines end in a newline (sed), even when a broken write left none
+         { tail -n "$((RUNS_KEPT - 1))" "$file" 2>/dev/null | sed '$a\'; printf '%s\n' "$run"; } > "$file.new" &&
+         mv -T "$file.new" "$file") 9>"$file.lock"
+  } 2>>"$ROOT/logs/jobs.err" || echo "$(date -Is) $user: can't record the job run in $file" >> "$ROOT/logs/jobs.err"
 }
 
 # An assistant can't type a slash command into its own terminal, so after it installs or updates a

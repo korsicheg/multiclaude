@@ -4,6 +4,8 @@
  * (src/panel.js; the VM's side is lib/multiclaude/router/panel.py). Opening it is one read. After a
  * tap it reads again, and the relay holds that read until the VM puts the snapshot with the answer.
  */
+import { duration, moment, outcomeOf, runFacts, tallyText } from "./format.js";
+
 const tg = window.Telegram?.WebApp;
 
 const ANSWER_WITHIN = 45000;     // ms before saying the VM hasn't answered a tap
@@ -13,6 +15,7 @@ const TURN_WITHIN = 2 * 60e3;    // ms a plugin or skill switch shows as asked f
 const SERVERS_FRESH = 10 * 60;   // s: older server checks are done again when the panel opens
 const TOAST_FOR = 3500;
 const DISPLAY_MAX = 40;
+const RUNS_FIRST = 10;           // job runs listed before "Show older runs"
 const MODEL_NAMES = { opus: "Opus", sonnet: "Sonnet", haiku: "Haiku", fable: "Fable" };
 const KEEP_KEY = "keep-switches";  // this phone's Keep after restarts switch, in localStorage
 const DEFAULT_QUIET_HOURS = "00:00-09:00";
@@ -27,8 +30,9 @@ let keep = storedKeep();     // the Keep after restarts switch
 const waiting = new Map();   // tap id -> {action, args, since}, oldest first: taps the VM hasn't answered
 const switching = {};        // "model" | "effort" -> {target, since}: asked for, not in effect yet
 const turning = {};          // "plugin:<id>" | "skill:<name>" -> {on, since}: asked for, not in the snapshot yet
-const opened = new Set();    // the plugins and skills shown opened, kept as the list is drawn again
+const opened = new Set();    // the plugins, skills and job runs shown opened, kept as the list is drawn again
 let extensionsTab = "plugins";
+let olderRunsShown = false;
 let followUntil = 0;         // keep reading changes until then
 let following = false;
 let toastTimer = null;
@@ -179,6 +183,7 @@ function render() {
   section("claude", "Claude", claudeRows(), switchingNote());
   section("usage", "Usage", usageRows(), "");
   section("jobs", "Scheduled jobs", jobRows(), jobsNote());
+  if (snapshot.activity) section("activity", "Activity", activityRows(), activityNote());
   section("mcp", "MCP servers", serverRows(), serversNote());
   section("extensions", "Plugins & skills", extensionRows(), extensionsNote());
   section("profile", "Profile", profileRows(), profileNote());
@@ -315,7 +320,7 @@ function jobRows() {
   if (!snapshot.jobs.length) return [noteRow(`None yet. Ask ${botName()} for one, such as “every morning at 8, …”.`)];
   return snapshot.jobs.map((job) => {
     const paused = expected(job.paused, pausePick(job));
-    const when = paused ? "Paused" : job.next ? `Next: ${moment(job.next)}` : "No next run";
+    const when = paused ? "Paused" : job.next ? `Next: ${moment(job.next, snapshot.person.timezone)}` : "No next run";
     return el("div", { className: "row" },
       el("details", { className: "job" },
         el("summary", {}, el("span", {}, job.title), el("span", { className: "sub" }, when)),
@@ -333,6 +338,45 @@ function deleteJob(job) {
   tg.showConfirm(`Delete “${job.title}”? ${capitalized(botName())} removes it from the crontab and from your jobs list.`, (ok) => {
     if (ok) tap("job", { command: "delete", id: job.id });
   });
+}
+
+/* --- activity: what the jobs did, newest first, each run under its job's name --- */
+
+function activityRows() {
+  const { runs, today, week } = snapshot.activity;
+  if (!runs.length) return [noteRow("Nothing yet: each run of your scheduled jobs shows here.")];
+  const shown = olderRunsShown ? runs : runs.slice(0, RUNS_FIRST);
+  const older = runs.length - shown.length;
+  return [
+    el("div", { className: "row" }, tally("Today", today), tally("Last 7 days", week)),
+    ...shown.map(runRow),
+    older ? el("button", { className: "row more", onclick: showOlderRuns }, `Show ${older} older ${older === 1 ? "run" : "runs"}`) : null,
+  ].filter(Boolean);
+}
+
+function tally(label, counts) {
+  return el("span", { className: "label" }, label, el("span", { className: "sub" }, tallyText(counts)));
+}
+
+/* A run's job, when, how it went and what it cost; the start of its answer, all of it once opened. */
+function runRow(run) {
+  const key = `run:${run.started}:${run.title}`;
+  const title = el("span", {}, run.title);
+  const facts = el("span", { className: "sub" }, runFacts(run, snapshot.person.timezone));
+  const body = run.preview
+    ? el("details", { className: "job", open: opened.has(key), ontoggle: (event) => remember(key, event.target.open) },
+      el("summary", {}, title, facts, el("span", { className: "preview" }, run.preview)))
+    : el("span", { className: "label" }, title, facts);
+  return el("div", { className: "row run" }, el("span", { className: `dot ${outcomeOf(run).dot}` }), body);
+}
+
+function showOlderRuns() {
+  olderRunsShown = true;
+  render();
+}
+
+function activityNote() {
+  return snapshot.activity.runs.length ? "What your scheduled jobs did, newest first. Tap a run to read more of it." : "";
 }
 
 function serverRows() {
@@ -615,26 +659,7 @@ function tokens(n) {
   return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
 }
 
-function duration(seconds) {
-  const minutes = Math.max(0, Math.round(seconds / 60));
-  if (minutes < 60) return `${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} h ${minutes % 60} min`;
-  return `${Math.floor(hours / 24)} d ${hours % 24} h`;
-}
-
 function ago(when) {
   const seconds = now() - when;
   return seconds < 60 ? "just now" : `${duration(seconds)} ago`;
-}
-
-/* A moment in the person's own timezone: "today 21:00", "tomorrow 09:00", "Sun 18 Oct, 10:00". */
-function moment(when) {
-  const timeZone = snapshot.person.timezone;
-  const date = new Date(when * 1000);
-  const day = (d) => d.toLocaleDateString("en-CA", { timeZone });
-  const time = date.toLocaleTimeString("en-GB", { timeZone, hour: "2-digit", minute: "2-digit" });
-  if (day(date) === day(new Date())) return `today ${time}`;
-  if (day(date) === day(new Date(Date.now() + 864e5))) return `tomorrow ${time}`;
-  return `${date.toLocaleDateString("en-GB", { timeZone, weekday: "short", day: "numeric", month: "short" })}, ${time}`;
 }

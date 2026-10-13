@@ -29,6 +29,8 @@ ASKS = STATE / "asks"
 RELOAD_REQUESTS = STATE / "reload-requests"
 # shared.py holds this lock while it edits workspace settings; the router takes it too.
 SETTINGS_LOCK = STATE / "shared.lock"
+# What each scheduled job run did, <name>.jsonl, written by `assistant job` (jobruns.py).
+JOB_RUNS = STATE / "job-runs"
 
 PROJECTS = CLAUDE_DIR / "projects"
 USER_SETTINGS = CLAUDE_DIR / "settings.json"

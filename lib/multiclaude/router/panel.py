@@ -1,7 +1,8 @@
 """The control panel, /config: a Telegram Mini App, served by the relay, where a person sees their
-usage and changes their settings, scheduled jobs, MCP servers, plugins and skills with a tap. Taps come in as
-"panel" envelopes, checked against Telegram's signature; the router carries them out and puts
-each person's snapshot on the relay whenever it changes (fingerprint)."""
+usage and what their scheduled jobs did, and changes their settings, scheduled jobs, MCP servers,
+plugins and skills with a tap. Taps come in as "panel" envelopes, checked against Telegram's
+signature; the router carries them out and puts each person's snapshot on the relay whenever it
+changes (fingerprint)."""
 import hashlib
 import hmac
 import json
@@ -13,7 +14,7 @@ import urllib.parse
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from multiclaude import addons, bot, cronjobs, jsonfile, paths, telegram
+from multiclaude import addons, bot, cronjobs, jobruns, jsonfile, paths, telegram
 from multiclaude import users as registry
 from multiclaude.channels import TelegramChat
 from multiclaude.log import log
@@ -29,6 +30,7 @@ WATCH_EVERY = 30        # seconds between looks for changes
 USAGE_STEP = 5          # percent: context and plan limits count as changed in steps this big
 PUSH_TRIES, PUSH_PAUSE = 3, 5
 DISPLAY_MAX = 40
+RUNS_SHOWN = 50         # the newest job runs the page lists; its totals count every run kept
 MCP_COMMANDS = ("reconnect", "enable", "disable", "login")
 SERVER_NAME_RE = re.compile(r"[\w.:@-]+")
 PLUGIN_ID_RE = re.compile(r"[\w.-]+@[\w.-]+")
@@ -128,14 +130,38 @@ def usage_part(status):
             "plan": [{"label": label, "used": used, "resets": resets} for label, used, resets in limits]}
 
 
-def jobs_part(user, now):
+def jobs_part(jobs, now):
     after = datetime.fromtimestamp(now, timezone.utc)
     rows = []
-    for job in cronjobs.jobs(user.name, cronjobs.read_crontab()):
+    for job in jobs:
         run = job.next_run(after)
         rows.append({"id": job.id, "title": job.title, "detail": job.detail, "paused": job.paused,
                      "next": run.timestamp() if run else None})
     return rows
+
+
+def activity_part(name, jobs, zone, now):
+    """Their job runs, newest first, each under the name of the job that runs it when it's one of
+    theirs, and how many ran and what they cost today (in their timezone) and in the last 7 days."""
+    runs = jobruns.runs(name)
+    job_names = {jobruns.title(prompt): job.title for job in jobs for prompt in job.prompts}
+    return {"runs": [run_row(run, job_names) for run in runs[:RUNS_SHOWN]],
+            "today": jobruns.tally(runs, day_start(now, zone)), "week": jobruns.tally(runs, now - jobruns.WEEK)}
+
+
+def run_row(run, job_names):
+    return {"started": run["started"], "finished": run.get("finished"),
+            "title": job_names.get(run["title"], run["title"]), "outcome": run["outcome"],
+            "cost": jobruns.cost(run), "preview": jobruns.plain(str(run.get("preview") or ""))}
+
+
+def day_start(now, zone):
+    """When the day of now (a Unix time) began in the timezone named zone, UTC if it names none."""
+    try:
+        local = ZoneInfo(zone)
+    except (ValueError, ZoneInfoNotFoundError):
+        local = timezone.utc
+    return datetime.fromtimestamp(now, local).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
 
 
 def fingerprint(snapshot):
@@ -372,10 +398,12 @@ class Panel:
         now = time.time()
         status = usage.snapshot(user) or {}
         checked, servers = self.servers.get(user.name, (None, []))
-        person = load_person(user.name)
+        person, entry = load_person(user.name), registry.load_users()[user.name]
+        jobs = cronjobs.jobs(user.name, cronjobs.read_crontab())
         return {"answer": self.answers.get(user.name), "bot": bot.name(), "addons": list(addons.names()),
-                "person": person_part(registry.load_users()[user.name]), "claude": claude_part(user, status),
-                "usage": usage_part(status), "jobs": jobs_part(user, now),
+                "person": person_part(entry), "claude": claude_part(user, status),
+                "usage": usage_part(status), "jobs": jobs_part(jobs, now),
+                "activity": activity_part(user.name, jobs, entry.timezone, now),
                 "mcp": {"checked": checked, "checking": user.name in self.checking, "servers": servers},
                 "plugins": inventory.plugins(person), "skills": inventory.skills(person)}
 

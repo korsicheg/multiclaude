@@ -163,7 +163,7 @@ button.row:active { background: var(--separator); }
 
 .dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--hint); }
 .dot.ok { background: var(--ok); }
-.dot.auth { background: var(--warn); }
+.dot.auth, .dot.warn { background: var(--warn); }
 .dot.failed { background: var(--destructive); }
 
 details.job { flex: 1; min-width: 0; }
@@ -172,6 +172,23 @@ details.job summary::-webkit-details-marker { display: none; }
 .detail { color: var(--hint); font-size: 14px; margin: 8px 0; overflow-wrap: anywhere; }
 .link { border: 0; background: none; padding: 0; color: var(--link); font-size: 15px; cursor: pointer; }
 .destructive { color: var(--destructive); }
+
+/* Activity: a run's dot by its first line, and the start of its answer cut to two lines until it's opened. */
+.row.run { align-items: flex-start; }
+.row.run .dot { margin-top: 6px; }
+.preview {
+  display: -webkit-box;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--hint);
+  font-size: 14px;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+details[open] .preview { display: block; -webkit-line-clamp: none; }
+button.more { color: var(--link); }
 
 /* Plugins & skills: the tabs over the list, and the small tags after a name. */
 .row.tabs { padding: 8px 12px; }

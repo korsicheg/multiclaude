@@ -1,5 +1,6 @@
-"""Tests for the control panel's VM side: router/panel.py and cronjobs.py. The relay's side is
-tested in relay/test/panel.test.js."""
+"""Tests for the control panel's VM side: router/panel.py, cronjobs.py and jobruns.py. The relay's
+side is tested in relay/test/panel.test.js, and how the page words things in relay/test/format.test.js."""
+import json
 import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -7,6 +8,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from conftest import ALICE_CHAT, CRONTAB, TOKEN, last_snapshot, read_json, signed, tap, write_json
+
+PAUSED = "#⏸ "  # cronjobs.PAUSED
 
 # --- who opened it ---
 
@@ -120,6 +123,117 @@ def test_the_router_looks_for_changes_every_half_minute(r, desk, panel):
     panel.tick(1010.0)
     panel.tick(1031.0)
     assert len(r.pushed) == 2  # alice and bob, once: the second look found nothing new
+
+
+# --- what the jobs did ---
+
+def record_runs(r, name, *runs):
+    """name's record of job runs, as `assistant job` writes it."""
+    path = r.paths.JOB_RUNS / f"{name}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(run) + "\n" for run in runs))
+
+
+def a_run(started, title="brief", outcome="sent", **extra):
+    return {"started": started, "finished": started + 240, "title": title, "outcome": outcome, **extra}
+
+
+def test_the_activity_lists_the_persons_own_runs_newest_first_under_their_jobs_names(r, panel):
+    record_runs(r, "alice", a_run(1000, cost_usd=0.12, preview="**Rain** at 5pm"),
+                a_run(2000, title="invoices", outcome="failed", preview="API Error: 529"),
+                a_run(3000, title="a one-off look around", outcome="nothing"))
+    record_runs(r, "bob", a_run(2500, title="hers"))
+
+    tap(panel, "refresh")
+
+    runs = last_snapshot(r)["activity"]["runs"]
+    assert [(run["title"], run["outcome"]) for run in runs] == [
+        ("a one-off look around", "nothing"), ("Invoice sync, Sundays 10:00 Helsinki", "failed"),
+        ("Morning brief at 09:00 Helsinki", "sent")]
+    assert runs[-1] == {"started": 1000, "finished": 1240, "title": "Morning brief at 09:00 Helsinki",
+                        "outcome": "sent", "cost": 0.12, "preview": "Rain at 5pm"}
+    assert (runs[0]["cost"], runs[0]["preview"]) == (None, "")
+
+
+def test_the_activity_lists_the_newest_runs_and_counts_every_run_kept(r, panel, monkeypatch):
+    monkeypatch.setattr(r.panel_module, "RUNS_SHOWN", 2)
+    now = time.time()
+    record_runs(r, "alice", *(a_run(now - ago) for ago in (30, 20, 10)))
+    tap(panel, "refresh")
+    activity = last_snapshot(r)["activity"]
+    assert [run["started"] for run in activity["runs"]] == [now - 10, now - 20]
+    assert activity["week"]["runs"] == 3
+
+
+def test_the_activity_counts_runs_failures_and_cost_today_in_the_persons_timezone_and_over_7_days(r, panel):
+    r.users_module.update("alice", "timezone", "Pacific/Kiritimati")  # UTC+14: its day isn't UTC's
+    midnight = r.panel_module.day_start(time.time(), "Pacific/Kiritimati")
+    record_runs(r, "alice",
+                a_run(midnight - 8 * 24 * 3600, cost_usd=5.0),  # over a week ago
+                a_run(midnight - 60, outcome="failed", cost_usd=0.25),  # yesterday there
+                a_run(midnight + 1, cost_usd=0.1), a_run(midnight + 2, outcome="failed"),
+                a_run(midnight + 3, outcome="skipped"))  # didn't run
+
+    tap(panel, "refresh")
+
+    activity = last_snapshot(r)["activity"]
+    assert activity["today"] == {"runs": 2, "failed": 1, "cost": 0.1}
+    assert activity["week"] == {"runs": 3, "failed": 2, "cost": 0.35}
+
+
+def test_a_day_starts_at_midnight_in_the_persons_timezone_or_utc(r, panel):
+    now = datetime(2026, 10, 13, 22, 30, tzinfo=timezone.utc).timestamp()  # already the 14th in Helsinki
+    helsinki = datetime(2026, 10, 14, tzinfo=ZoneInfo("Europe/Helsinki")).timestamp()
+    assert r.panel_module.day_start(now, "Europe/Helsinki") == helsinki
+    assert r.panel_module.day_start(now, "Mars/Olympus") == datetime(2026, 10, 13, tzinfo=timezone.utc).timestamp()
+
+
+def test_lines_of_a_record_that_arent_runs_are_left_out(r, panel):
+    from multiclaude import jobruns
+    record_runs(r, "alice")
+    with open(r.paths.JOB_RUNS / "alice.jsonl", "w") as record:
+        record.write('not json\n[1]\n{"started": "soon", "title": "x", "outcome": "sent"}\n'
+                     '{"started": 1, "title": "x", "outcome": "exploded"}\n' + json.dumps(a_run(1000)) + "\n{broken")
+    assert [run["started"] for run in jobruns.runs("alice")] == [1000]
+
+
+def test_a_record_that_cant_be_read_shows_no_runs(r, panel):
+    (r.paths.JOB_RUNS / "alice.jsonl").mkdir(parents=True)
+    tap(panel, "refresh")
+    assert last_snapshot(r)["activity"]["runs"] == []
+    assert last_snapshot(r)["activity"]["today"] == {"runs": 0, "failed": 0, "cost": 0}
+
+
+@pytest.mark.parametrize("markdown, shown", [
+    ("### 🌅 Morning\n\n**Rain** at `5pm`, see [the forecast](https://x.test).",
+     "🌅 Morning\nRain at 5pm, see the forecast."),
+    ("> quoted ~~old~~ ||secret|| __bold__", "quoted old secret bold"),
+    ('<tg-time unix="1" format="t">Fri 21:00</tg-time>, <details><summary>More', "Fri 21:00, More"),
+    ('cut off in a tag <tg-time unix="17', "cut off in a tag"),
+])
+def test_a_preview_shows_the_words_of_the_answer_without_its_markdown(r, panel, markdown, shown):
+    from multiclaude import jobruns
+    assert jobruns.plain(markdown) == shown
+
+
+def test_a_runs_title_is_its_first_line_cut_as_assistant_job_cuts_it(r, panel):
+    from multiclaude import jobruns
+    assert jobruns.title("Brief: follow brief.md\n\nThe data…") == "Brief: follow brief.md"
+    assert jobruns.title("é" * 150) == "é" * 99 + "…"  # as in test_assistant_cli.py
+
+
+@pytest.mark.parametrize("line, prompt", [
+    ('0 8 * * * assistant job --user alice "brief"', "brief"),
+    ('0 6,7 * * * [ "$(TZ=Europe/Helsinki date +\\%H)" = 09 ] && ~/assistant/bin/assistant job --user alice '
+     '--model sonnet --deny mcp__mail__send "Brief: 100\\% of it"; crontab -l | grep -v x | crontab -', "Brief: 100% of it"),
+    ("@daily assistant job --user alice it\\'s 'all here' >> log 2>&1", "it's all here"),
+    (f'{PAUSED}0 8 * * * assistant job "a \\"quoted\\" word"', 'a "quoted" word'),
+    ('0 8 * * * assistant job "x" % the rest is its input', "x"),
+    ('0 8 * * * assistant notify --user alice "not a job"', None),
+    ('0 8 * * * assistant job "never closed', None),
+])
+def test_a_jobs_instructions_are_read_from_its_crontab_line_as_the_job_gets_them(r, panel, line, prompt):
+    assert r.cronjobs.Job("x", (line,)).prompts == ([prompt] if prompt else [])
 
 
 # --- what it changes ---
