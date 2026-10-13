@@ -417,6 +417,7 @@ cmd_job() {
     return 0
   fi
   load_env
+  trust_folder "$ws" || echo "[$(date -Is)] couldn't mark $ws trusted in ~/.claude.json" >> "$ROOT/logs/jobs.err"
   # Jobs run in the user's workspace (their CLAUDE.md and memory). They must not
   # load the Telegram plugin: a second copy would take over the live bot, and a
   # failed one makes Claude skip the plugin at the next start. The prompt goes in
@@ -478,6 +479,16 @@ record_job_cost() {
 # record, for the control panel's Activity (lib/multiclaude/jobruns.py reads it), keeping their last
 # RUNS_KEPT. OUTCOME is sent, nothing, failed or skipped. A record it can't write is logged in
 # jobs.err and the job carries on: bookkeeping never costs anyone their answer.
+# Claude Code ignores the tools a folder allows (permissions.allow in its .claude/settings.json)
+# until someone accepts its "Do you trust this folder?" dialog, which a job never shows. So a job
+# marks its person's folder trusted in ~/.claude.json first, as the live assistant's would be.
+trust_folder() {
+  local claude_json=${CLAUDE_JSON:-$HOME/.claude.json}
+  [ -f "$claude_json" ] || echo '{}' > "$claude_json"
+  jq -e --arg ws "$1" '.projects[$ws].hasTrustDialogAccepted == true' "$claude_json" >/dev/null 2>&1 ||
+    update_json "$claude_json" --arg ws "$1" '.projects[$ws].hasTrustDialogAccepted = true'
+}
+
 record_job_run() {
   local user=$1 file="$ROOT/state/job-runs/$1.jsonl" run
   {

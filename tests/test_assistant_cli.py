@@ -157,6 +157,17 @@ def test_a_job_sends_its_answer_and_records_its_cost(home):
     assert "Rain at 5pm." in home.jobs_log()
 
 
+def test_a_job_marks_its_folder_trusted_so_its_allowed_tools_count(home):
+    (home.home / ".claude.json").write_text(json.dumps({"projects": {"/elsewhere": {"x": 1}}, "theme": "dark"}))
+    home.fake.on(["-p"], stdout=job_answer("NOTHING"))
+
+    home.run("job", "--user", "alice", "anything")
+
+    saved = json.loads((home.home / ".claude.json").read_text())
+    assert saved["projects"][str(home.home / "workspaces" / "alice")]["hasTrustDialogAccepted"] is True
+    assert saved["projects"]["/elsewhere"] == {"x": 1} and saved["theme"] == "dark"
+
+
 def test_a_job_prompt_that_starts_with_a_dash_is_still_the_prompt(home):
     home.fake.on(["-p"], stdout=job_answer("done"))
     home.run("job", "--user", "alice", "--weekly summary, please")
