@@ -1,5 +1,6 @@
-"""The take-over link in the person's Telegram chat, as a button so Telegram never fetches the page
-for a preview, and the message edited once the take-over ends. --print-link prints the link
+"""The take-over link in the person's Telegram chat, as a Mini App button: Telegram never fetches the
+page for a preview, and the page can stop Telegram's sheet from closing when a drag scrolls the
+browser. The message is edited once the take-over ends. --print-link prints the link
 instead (PrintedLink), for trying it out on the machine or passing it on another way."""
 from multiclaude.log import log
 from multiclaude.telegram import BotApi, ChatHistory, TelegramError, without_highlights
@@ -25,7 +26,7 @@ class TelegramLink:
                 "Tap **Open the browser**, do it there, then tap **Done** on that page. "
                 f"The link works for {self.minutes} minutes and is yours alone: whoever has it sees and "
                 "controls this browser, so don't forward it.")
-        button = {"text": "🖐️ Open the browser", "url": link}
+        button = {"text": "🖐️ Open the browser", "web_app": {"url": link}}
         result = self.api.call("sendRichMessage", chat_id=self.chat, rich_message={"markdown": text},
                                reply_markup={"inline_keyboard": [[button]]})
         self.message_id = result["message_id"]

@@ -857,7 +857,7 @@ def the_link(api):
     while time.monotonic() < deadline:
         for method, fields, _ in api.calls:
             if method == "sendRichMessage":
-                return json.loads(fields["reply_markup"])["inline_keyboard"][0][0]["url"]
+                return json.loads(fields["reply_markup"])["inline_keyboard"][0][0]["web_app"]["url"]
         time.sleep(0.02)
     raise AssertionError("no link was sent")
 

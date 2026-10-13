@@ -200,6 +200,7 @@ let ended = false;
 start();
 
 function start() {
+  settleInTelegram();
   document.body.classList.toggle("mouse", matchMedia("(pointer: fine)").matches);
   document.addEventListener("pointermove", useMouseLayout);
   screen.addEventListener("pointerdown", (event) => (isMouse(event) ? pressMouse(event) : startTouch(event)));
@@ -864,6 +865,24 @@ function setMoreOpen(open) {
 }
 
 /** Ends the page, once: the frame request still out when Done is through gets a 410 too. */
+/**
+ * Opened from its Telegram button, this page is a Mini App in a sheet that Telegram's iOS app pulls
+ * down and hides on a vertical drag, which here is how the person scrolls. So the sheet takes the
+ * whole screen, ignores vertical swipes, and asks before it closes. Elsewhere (Safari, a desktop
+ * browser) there's no Telegram to tell.
+ */
+function settleInTelegram() {
+  const proxy = window.TelegramWebviewProxy;
+  if (!proxy && !location.hash.includes("tgWebApp")) return;
+  const post = (eventType, eventData = {}) => (proxy
+    ? proxy.postEvent(eventType, JSON.stringify(eventData))
+    : window.parent.postMessage(JSON.stringify({ eventType, eventData }), "*"));
+  post("web_app_ready");
+  post("web_app_expand");
+  post("web_app_setup_swipe_behavior", { allow_vertical_swipe: false });
+  post("web_app_setup_closing_behavior", { need_confirmation: true });
+}
+
 function end(note) {
   if (ended) return;
   ended = true;
