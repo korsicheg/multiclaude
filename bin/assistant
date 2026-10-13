@@ -350,13 +350,23 @@ job_title() {
 
 cmd_job() {
   local user prompt out ws id
-  local -a only_tools=()
+  local -a claude_options=()
   user=$(pick_user "$@"); [ "${1:-}" = "--user" ] && shift 2
-  # --tools, as Claude Code's flag: the job gets only these built-in tools and no MCP server
-  # at all, so it can't reach anything it wasn't given (a read-only job, say).
-  if [ "${1:-}" = "--tools" ]; then only_tools=(--tools "${2:-}" --strict-mcp-config); shift 2; fi
+  # The job's own limits, each one of Claude Code's flags:
+  #   --tools: only these built-in tools and no MCP server at all, so it can't reach anything
+  #     it wasn't given (a job that only reads and takes notes, say);
+  #   --deny: never these tools, MCP ones included (sending mail, printing…);
+  #   --model: this model rather than the person's saved one (a cheaper one for frequent jobs).
+  while true; do
+    case "${1:-}" in
+      --tools) claude_options+=(--tools "${2:-}" --strict-mcp-config); shift 2 ;;
+      --deny) claude_options+=(--disallowedTools "${2:-}"); shift 2 ;;
+      --model) claude_options+=(--model "${2:-}"); shift 2 ;;
+      *) break ;;
+    esac
+  done
   prompt="$*"
-  [ -n "$prompt" ] || die 'usage: assistant job [--user <name>] [--tools <tools>] "<instructions>"'
+  [ -n "$prompt" ] || die 'usage: assistant job [--user <name>] [--tools <tools>] [--deny <tools>] [--model <model>] "<instructions>"'
   ws="$HOME/workspaces/$user"
   id=$(user_field "$user" telegram_id)
   [ -n "$id" ] && [ -d "$ws" ] || die "unknown user '$user' (see $USERS)"
@@ -376,7 +386,7 @@ cmd_job() {
           timeout "$JOB_TIMEOUT" claude -p --output-format json \
           --settings "$TELEGRAM_PLUGIN_OFF" \
           --permission-mode auto --permission-prompts none --no-session-persistence \
-          "${only_tools[@]}" --append-system-prompt "$JOB_PROMPT" 2>>"$ROOT/logs/jobs.err") \
+          "${claude_options[@]}" --append-system-prompt "$JOB_PROMPT" 2>>"$ROOT/logs/jobs.err") \
     || out="Scheduled job failed: $(job_title "$prompt") (details in ~/assistant/logs/jobs.err)"
   # The JSON result carries the answer and what the job cost. The cost goes into the same
   # per-session ledger the status line keeps for live sessions (the total in /usage).
@@ -613,10 +623,11 @@ assistant pair <code> [<name> ["Display Name"]]
 assistant add-user <name> <telegram id> ["Display Name"]
                                 Give an already-allowed Telegram user their own assistant
 assistant start-users           Start any user assistant that isn't running
-assistant job [--user <name>] [--tools <tools>] "<task>"
+assistant job [--user <name>] [--tools <tools>] [--deny <tools>] [--model <model>] "<task>"
                                 Run a one-shot task in that user's workspace and send them
                                 the result (used by cron; default user: the owner); with
-                                --tools, only those built-in tools and no MCP servers
+                                --tools, only those built-in tools and no MCP servers; with
+                                --deny, never those tools; with --model, that model
 assistant reload-plugins [--user <name>]
                                 Have the router type /reload-plugins into that user's assistant
                                 once it's idle (after it installed or updated a plugin or skill)

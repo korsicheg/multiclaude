@@ -247,7 +247,7 @@ assistant attach [<name>]       # watch someone's assistant (or the front desk);
 assistant start|stop|restart    # front desk, every assistant and the router
 assistant start-users           # start any person's assistant that isn't running
 assistant notify [--user <name>] "text"         # a Telegram message to one person (default: the owner)
-assistant job [--user <name>] "instructions"    # a one-shot task whose answer goes to that person
+assistant job [--user <name>] [--model <m>] [--deny <tools>] "instructions"   # a one-shot task whose answer goes to that person
 assistant shared list           # plugins, skills and marketplaces: shared and per person
 assistant shared sync [--dry-run] [--wait]
 assistant relay deploy          # deploy the relay: the control panel, and the add-ins' routes
@@ -257,7 +257,7 @@ assistant addon list|enable|disable
 `assistant restart` stops every tmux session, so everyone's assistant restarts (each resumes its conversation). For a router change, restart only the router: `sudo systemctl restart assistant-watcher`. It routes the messages that arrived while it was down.
 
 - **Logs:** the router logs to `journalctl -u assistant-watcher`. Jobs log to `~/assistant/logs/jobs.log` (errors in `jobs.err`), the shared sync to `logs/shared.log`.
-- **Scheduled jobs:** each assistant adds its own cron lines (`assistant job --user <name> "…"`), each under a `# <name>:` comment and listed in that person's `~/workspaces/<name>/jobs.md`. `assistant job` runs `claude -p` in the person's folder, at most one run of the same job at a time and for up to an hour, and sends its final answer unless that is exactly `NOTHING`, which makes "only tell me if…" jobs possible.
+- **Scheduled jobs:** each assistant adds its own cron lines (`assistant job --user <name> "…"`), each under a `# <name>:` comment and listed in that person's `~/workspaces/<name>/jobs.md`. `assistant job` runs `claude -p` in the person's folder, at most one run of the same job at a time and for up to an hour, and sends its final answer unless that is exactly `NOTHING`, which makes "only tell me if…" jobs possible. `--model` runs a job on another model than the person's saved one, and `--deny` forbids tools outright (sending mail, say).
 - **Plugins, skills and marketplaces:** each assistant installs them only in its person's own `~/workspaces/<name>/.claude/`. Once everyone has the same one, `assistant shared sync` moves it to `~/.claude` and deletes the copies. If someone turns a shared one off for themselves, it moves back into everyone else's folder. When you add a person, everything shared moves back into the folders of the people who had it, so the newcomer starts with none of it. The owner gets a message for each move. The bot's `/plugin` and `/mcp` commands run with the `env` from the person's own `.claude/settings.json`, so a login kept there, such as their own GitHub login for a private marketplace, works for them too.
 
 ## What's not in this repo

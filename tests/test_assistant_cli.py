@@ -160,7 +160,18 @@ def test_a_job_can_be_limited_to_some_tools_and_no_mcp_servers(home):
 def test_a_job_without_tools_gets_them_all(home):
     home.fake.on(["-p"], stdout=job_answer("NOTHING"))
     home.run("job", "--user", "alice", "anything")
-    assert "--tools" not in home.fake.calls[0]["args"]
+    args = home.fake.calls[0]["args"]
+    assert "--tools" not in args and "--disallowedTools" not in args and "--model" not in args
+
+
+def test_a_job_can_be_denied_some_tools_and_given_a_model(home):
+    home.fake.on(["-p"], stdout=job_answer("NOTHING"))
+    home.run("job", "--user", "alice", "--model", "sonnet", "--deny", "mcp__mail__send", "look around")
+    args = home.fake.calls[0]["args"]
+    assert args[args.index("--model") + 1] == "sonnet"
+    assert args[args.index("--disallowedTools") + 1] == "mcp__mail__send"
+    assert "--strict-mcp-config" not in args
+    assert home.fake.calls[0]["stdin"] == "look around"
 
 
 def test_a_job_with_nothing_to_say_sends_nothing(home):
