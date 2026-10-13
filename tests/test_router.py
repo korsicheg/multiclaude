@@ -1328,6 +1328,29 @@ def test_the_approval_dialog_is_read_off_the_screen(r):
     assert r.claude_ui.approval_dialog(captured("approval-after.txt")) is None
 
 
+def beside_a_side_panel(screen):
+    """screen as Claude Code shows it with its panel open on the right."""
+    lines = screen.splitlines()
+    width = max(map(len, lines)) + 2
+    panel = ["  ✕", "  source: Current ▾", "", "  No changes this session"]
+    return "\n".join(line.ljust(width) + "│" + (panel[i] if i < len(panel) else "") for i, line in enumerate(lines))
+
+
+def test_the_approval_dialog_is_read_beside_the_side_panel(r):
+    # Beside the panel, a typed message once answered a dialog nobody had been asked about.
+    for name in ("approval-dialog.txt", "approval-dialog-no.txt"):
+        screen = captured(name)
+        assert r.claude_ui.approval_dialog(beside_a_side_panel(screen)) == r.claude_ui.approval_dialog(screen)
+
+
+def test_the_side_panel_is_cut_off_after_a_wide_character_too(r):
+    narrow, wide, full_width = "a" * 50, "🔧" + "b" * 47, "─" * 60
+    screen = "\n".join([narrow + "│ panel"] * 4 + [wide + "│ panel", full_width])
+
+    assert r.claude_ui.without_side_panel(screen).splitlines() == [narrow] * 4 + [wide, full_width]
+    assert r.claude_ui.without_side_panel(narrow + "\n" + full_width) == narrow + "\n" + full_width
+
+
 @pytest.fixture
 def dialog_on_screen(r, desk, monkeypatch):
     """Alice's assistant at work with the approval dialog on its screen; switch screens with .now."""

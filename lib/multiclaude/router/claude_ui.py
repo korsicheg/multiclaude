@@ -1,6 +1,7 @@
 """Reading Claude Code's pickers and dialogs off the screen and answering them."""
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass
 
 PICKER_ROW_RE = re.compile(r"^\s*(❯)?\s*\d+\.\s+(\S+)")
@@ -68,12 +69,21 @@ PICKERS = {"model": pick_model, "effort": pick_effort}
 
 
 # Claude Code's approval dialog. Even with bypassPermissions a few built-in safety checks stop
-# and ask: a full-width rule, the tool and what it wants to do, the reason, a countdown to the
-# automatic deny, "Do you want to proceed?" and numbered options with a ❯ at the cursor.
+# and ask, and so does a tool behind an `ask` permission rule: a full-width rule, the tool and
+# what it wants to do, the reason, a countdown to the automatic deny, "Do you want to proceed?"
+# and numbered options with a ❯ at the cursor.
 PROCEED = "Do you want to proceed?"
 RULE_RE = re.compile(r"^─{20,}$")
 OPTION_RE = re.compile(r"^\s*(❯)?\s*\d+\.\s+(.+?)\s*$")
 COUNTDOWN_RE = re.compile(r"automatically deny this request in (\d+):(\d{2})")
+
+# Claude Code can show a panel on the right of the screen ("No changes this session"), its
+# border a │ down one column. Beside it, every line of the conversation ends in the border and
+# the panel's text, so it is cut off before a dialog is read.
+PANEL_BORDER = "│"
+PANEL_MIN_COLUMN = 40     # nearer the left, a │ belongs to what's on screen, not to a panel
+PANEL_MIN_SHARE = 0.5     # of the lines wide enough to reach the border's column
+WIDE_CHAR_SLACK = 8       # an emoji is one character but two columns: the border moves left
 
 
 @dataclass(frozen=True)
@@ -91,9 +101,34 @@ class Dialog:
         return next((i for i, (cursor, _) in enumerate(self.options) if cursor), 0)
 
 
+def without_side_panel(screen):
+    """The screen with the panel on its right, if one is open, cut off."""
+    lines = screen.splitlines()
+    border = side_panel_border(lines)
+    if border is None:
+        return screen
+    return "\n".join(cut_at_border(line, border) for line in lines)
+
+
+def side_panel_border(lines):
+    """The column of the side panel's border, or None when no panel is open."""
+    columns = Counter(i for line in lines for i, char in enumerate(line)
+                      if char == PANEL_BORDER and i >= PANEL_MIN_COLUMN)
+    if not columns:
+        return None
+    column, lines_with_it = columns.most_common(1)[0]
+    lines_reaching_it = sum(len(line) > column for line in lines)
+    return column if lines_with_it >= PANEL_MIN_SHARE * lines_reaching_it else None
+
+
+def cut_at_border(line, border):
+    at = line.rfind(PANEL_BORDER, max(border - WIDE_CHAR_SLACK, 0), border + 1)
+    return line[:at].rstrip() if at != -1 else line
+
+
 def approval_dialog(screen):
     """The approval dialog on screen, or None."""
-    lines = screen.splitlines()
+    lines = without_side_panel(screen).splitlines()
     ask = max((i for i, line in enumerate(lines) if line.strip() == PROCEED), default=None)
     if ask is None:
         return None
