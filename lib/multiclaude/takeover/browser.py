@@ -1,7 +1,8 @@
 """The agent-browser session being taken over. Every session runs a WebSocket stream server on
 127.0.0.1 that sends what its page shows and takes mouse and keyboard input; `agent-browser
 stream status` names its port, and `stream enable` turns it back on if it was turned off. Its
-viewport is read with `eval` and set with `set viewport W H SCALE`."""
+viewport is read with `eval` and set with `set viewport W H SCALE`; its text fields are read with
+`eval` too (fields.py)."""
 import json
 import os
 import subprocess
@@ -44,12 +45,16 @@ class Session:
 
     def viewport(self):
         """The viewport as the page sees it."""
-        result = self.call("eval", VIEWPORT_SCRIPT).get("result")
+        result = self.eval(VIEWPORT_SCRIPT)
         try:
             width, height, scale = result
             return Viewport(int(width), int(height), float(scale))
         except (TypeError, ValueError):
             raise NoBrowser(f"agent-browser session {self.name!r}: no viewport in {result!r}") from None
+
+    def eval(self, script):
+        """What a JavaScript expression comes to in the page."""
+        return self.call("eval", script).get("result")
 
     def set_viewport(self, viewport):
         self.call("set", "viewport", str(viewport.width), str(viewport.height), f"{viewport.scale:g}")

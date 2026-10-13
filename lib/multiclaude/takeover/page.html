@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=8, interactive-widget=resizes-visual">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex, nofollow">
 <title>Your turn · {{BOT_NAME}}</title>
@@ -10,103 +10,117 @@
   :root {
     color-scheme: light dark;
     --bg: #ffffff; --fg: #0f172a; --muted: #64748b; --line: #cbd5e1; --screen: #e2e8f0; --focus: #2563eb;
-    --done: #16a34a; --done-fg: #ffffff; --note: #dcfce7;
+    --done: #16a34a; --done-fg: #ffffff; --note: #dcfce7; --float: rgba(15, 23, 42, 0.78); --float-fg: #ffffff;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #17212b; --fg: #f1f5f9; --muted: #94a3b8; --line: #334155; --screen: #0f172a; --focus: #60a5fa; --note: #14532d; }
+    :root { --bg: #17212b; --fg: #f1f5f9; --muted: #94a3b8; --line: #334155; --screen: #0f172a; --focus: #60a5fa; --note: #14532d;
+            --float: rgba(241, 245, 249, 0.85); --float-fg: #0f172a; }
   }
   * { box-sizing: border-box; }
-  html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
-  body {
-    display: flex; flex-direction: column; height: 100vh; height: 100dvh; margin: 0;
-    background: var(--bg); color: var(--fg); font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  html { height: 100%; overflow: hidden; overscroll-behavior: none; }
+  body {  /* the visible screen: with a phone's keyboard up, the part above it (followVisibleArea) */
+    position: fixed; inset: 0; display: flex; flex-direction: column; margin: 0; overflow: hidden;
+    background: var(--bg); color: var(--fg); font: 15px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
   }
-  #bar, #ended-note, .controls { flex: none; }
-  #bar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; padding: 8px 16px; }
+  button {
+    font: inherit; color: inherit; border: 1px solid var(--line); border-radius: 999px; background: transparent;
+    cursor: pointer; touch-action: manipulation;
+  }
+  #top { position: relative; flex: none; z-index: 2; }
+  #bar {
+    display: flex; align-items: center; gap: 6px; min-height: 44px; background: var(--bg); border-bottom: 1px solid var(--line);
+    padding: max(4px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 4px max(12px, env(safe-area-inset-left));
+  }
   #task {
-    flex: 1 1 20em; min-width: 0; margin: 0; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; cursor: pointer;
-    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;  /* a tap shows the rest */
+    flex: 1; min-width: 0; padding: 6px 0; border: 0; border-radius: 0; text-align: left; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  #task.open { display: block; }
-  #status { flex: 0 0 auto; margin: 0; font-size: 13px; color: var(--muted); }
-  #ended-note { display: none; margin: 0; padding: 12px 16px; background: var(--note); font-weight: 600; }
+  #more-toggle { flex: none; width: 30px; height: 30px; padding: 0; color: var(--muted); font-weight: 700; }
+  #cant { flex: none; padding: 5px 10px; font-size: 14px; color: var(--muted); }
+  #done { flex: none; padding: 6px 16px; border-color: var(--done); background: var(--done); color: var(--done-fg); font-weight: 700; }
+  #more {  /* the task in full, how it's going and how it works, over the browser so it keeps its size */
+    position: absolute; top: 100%; left: 0; right: 0; max-height: 60vh; overflow: auto; padding: 12px 16px 4px;
+    background: var(--bg); border-bottom: 1px solid var(--line); box-shadow: 0 8px 16px rgba(0, 0, 0, 0.15);
+  }
+  #more p { margin: 0 0 8px; }
+  #task-full { font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+  #status, .help { font-size: 14px; color: var(--muted); }
+  #view { position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; background: var(--screen); touch-action: pinch-zoom; }
+  .mouse.typing #view::after {
+    content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 2px var(--focus); pointer-events: none;
+  }
+  #pane { position: absolute; inset: 0; overflow: hidden; touch-action: pinch-zoom; }  /* scrolled only to keep a field above the keyboard */
+  #screen { position: absolute; display: block; touch-action: pinch-zoom; }  /* one finger is the person's hand in the browser; two zoom this page */
+  #keys {  /* the keyboard's way into the browser: over the field it types into, but never seen */
+    position: absolute; top: 0; left: 0; width: 1px; height: 24px; padding: 0; border: 0; resize: none; overflow: hidden;
+    opacity: 0; color: transparent; background: transparent; caret-color: transparent; font-size: 16px; pointer-events: none;
+    -webkit-user-select: text; user-select: text;
+  }
+  .float { border: 0; background: var(--float); color: var(--float-fg); }
+  #state {
+    position: absolute; top: 8px; left: 50%; transform: translateX(-50%); margin: 0; padding: 4px 12px; border-radius: 999px;
+    font-size: 13px; white-space: nowrap; pointer-events: none;
+  }
+  .live #state, .ended #state { display: none; }
+  #ended-note {
+    display: none; position: absolute; top: 16px; left: 16px; right: 16px; max-width: 28em; margin: 0 auto; padding: 12px 16px;
+    border-radius: 12px; background: var(--note); font-weight: 600; text-align: center;
+  }
   .ended #ended-note { display: block; }
-  #view {
-    position: relative; flex: 1 1 0; min-height: 0; overflow: hidden;
-    display: flex; align-items: center; justify-content: center; background: var(--screen);
+  .ended #pane, .ended #cant, .ended #done { opacity: 0.4; pointer-events: none; }
+  #keyboard {
+    position: absolute; right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom));
+    height: 44px; min-width: 44px; padding: 0 12px; font-size: 22px; opacity: 0.85;
   }
-  .typing #view { box-shadow: inset 0 0 0 2px var(--focus); }
-  #screen {
-    display: block; flex: none;
-    touch-action: pinch-zoom;  /* one finger is the person's hand in the browser; two zoom this page */
-    -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+  #keyboard .label { display: none; margin-left: 6px; font-size: 15px; font-weight: 600; }
+  .nudge #keyboard { opacity: 1; animation: nudge 0.6s ease-in-out 3; }
+  .nudge #keyboard .label { display: inline; }
+  @keyframes nudge { 50% { transform: scale(1.15); } }
+  #typing-keys { display: none; position: absolute; right: 8px; bottom: 8px; gap: 6px; }
+  #typing-keys button { width: 44px; height: 40px; border-radius: 10px; font-size: 20px; }
+  .typing #typing-keys { display: flex; }
+  .typing #keyboard, .ended #keyboard, .ended #typing-keys { display: none; }
+  #hold-mark {  /* a finger held long enough to press and drag */
+    display: none; position: absolute; width: 56px; height: 56px; margin: -28px 0 0 -28px;
+    border: 3px solid var(--focus); border-radius: 50%; pointer-events: none;
   }
-  #keys {  /* the keyboard's way into the browser: focused, but never seen */
-    position: absolute; top: 0; left: 0; width: 1px; height: 1px; padding: 0; border: 0; resize: none;
-    opacity: 0; color: transparent; caret-color: transparent; font-size: 16px; pointer-events: none;
-  }
-  .ended #view, .ended .controls { opacity: 0.4; pointer-events: none; }
-  .controls { display: grid; gap: 8px; padding: 8px 16px 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
-  .hint { margin: 0; font-size: 13px; color: var(--muted); }
-  .hint.typing-only, .typing .hint.idle-only { display: none; }
-  .typing .hint.typing-only { display: block; }
-  .row { display: flex; gap: 8px; }
-  .row > * { flex: 1; min-width: 0; }
-  input, button { font: inherit; font-size: 16px; color: inherit; border-radius: 10px; }
-  input { padding: 9px 12px; border: 1px solid var(--line); background: transparent; }
-  button { padding: 9px 6px; border: 1px solid var(--line); background: transparent; touch-action: manipulation; cursor: pointer; }
-  .row > #send, .row > [data-key=Enter] { flex: 0 0 auto; padding: 9px 16px; }
-  #done { flex: 2; padding: 12px; border: 0; background: var(--done); color: var(--done-fg); font-size: 18px; font-weight: 700; }
-  #cant { color: var(--muted); }
+  .holding #hold-mark { display: block; }
   /* With a mouse or trackpad (body.mouse) the person works in the browser itself and the keyboard
-     types straight into it, so the text field and the key buttons are a phone's; Done and I can't
-     do it share the hint's row. */
+     types straight into it, so the phone's keyboard buttons and help give way to the mouse's. */
   body:not(.mouse) .mouse-only, .mouse .touch-only { display: none !important; }
-  .mouse .controls { display: flex; align-items: center; gap: 12px; }
-  .mouse .controls > .hint { flex: 1; }
-  .mouse .finish { flex: 0 0 auto; }
-  .mouse .finish > button { flex: none; padding: 8px 18px; font-size: 16px; }
-  /* A phone on its side keeps room for the browser: one line of task, no hint, and the text field
-     beside the key buttons. */
-  @media (max-height: 500px) {
-    #task { -webkit-line-clamp: 1; }
-    body:not(.mouse) .hint { display: none; }
-    body:not(.mouse) .controls { grid-template-columns: 1fr 1fr; padding-top: 4px; }
-    body:not(.mouse) .finish { grid-column: 1 / -1; }
-    body:not(.mouse) #done { padding: 9px; }
-  }
 </style>
 </head>
 <body data-bot="{{BOT_NAME}}" data-expires="{{EXPIRES}}">
-<header id="bar">
-  <p id="task">{{TASK}}</p>
-  <p id="status"><span id="state">Connecting…</span> · <span id="time-left"></span></p>
-</header>
-<p id="ended-note" role="status"></p>
-<main id="view">
-  <canvas id="screen" aria-label="The browser, live"></canvas>
-  <textarea id="keys" tabindex="-1" aria-label="Typing into the browser" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
-</main>
-<div class="controls">
-  <p class="hint idle-only mouse-only">Click in the page, then type. Scroll with the wheel or trackpad.</p>
-  <p class="hint typing-only mouse-only">Your typing goes to the browser. Scroll with the wheel or trackpad.</p>
-  <p class="hint touch-only">One finger taps, holds and drags; two zoom. To type, tap the box in the browser, then type below: Send types it, the keyboard's return key also presses Enter.</p>
-  <form id="typing" class="row touch-only">
-    <input id="text" type="text" autocomplete="one-time-code" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Text to type">
-    <button type="button" id="send">Send</button>
-  </form>
-  <div class="row touch-only">
-    <button type="button" data-key="Enter">⏎ Enter</button>
-    <button type="button" data-key="Backspace" aria-label="Delete">⌫</button>
-    <button type="button" data-key="Tab">Tab</button>
-    <button type="button" data-scroll="-1" aria-label="Scroll up">▲</button>
-    <button type="button" data-scroll="1" aria-label="Scroll down">▼</button>
-  </div>
-  <div class="row finish">
+<header id="top">
+  <div id="bar">
+    <button type="button" id="task" aria-expanded="false" aria-controls="more">{{TASK}}</button>
+    <button type="button" id="more-toggle" aria-label="How it works" aria-controls="more">?</button>
     <button type="button" id="cant">I can't do it</button>
-    <button type="button" id="done">✅ Done</button>
+    <button type="button" id="done">Done</button>
   </div>
-</div>
+  <div id="more" hidden>
+    <p id="task-full">{{TASK}}</p>
+    <p id="status"><span id="state-text">Connecting…</span> · <span id="time-left"></span></p>
+    <p class="help touch-only">Tap to click and drag to scroll. To press and drag, as on a slider or a "press and hold" button, touch and hold until a ring shows, then move. Pinch to zoom in. Tapping a text box brings up your keyboard; if it doesn't, tap ⌨.</p>
+    <p class="help mouse-only">Click, drag and scroll in the browser as usual. Click in the page, then type: your keyboard types into it.</p>
+  </div>
+</header>
+<main id="view">
+  <div id="pane">
+    <canvas id="screen" aria-label="The browser, live"></canvas>
+    <textarea id="keys" tabindex="-1" aria-label="Typing into the browser" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+  </div>
+  <p id="state" class="float" role="status">Connecting…</p>
+  <p id="ended-note" role="status"></p>
+  <button type="button" id="keyboard" class="float touch-only" aria-label="Type">⌨<span class="label">Type</span></button>
+  <div id="typing-keys" class="touch-only">
+    <button type="button" class="float" data-key="Backspace" aria-label="Delete">⌫</button>
+    <button type="button" class="float" data-key="Enter" aria-label="Enter">↵</button>
+    <button type="button" class="float" data-key="Tab" aria-label="Tab">⇥</button>
+  </div>
+  <div id="hold-mark"></div>
+</main>
 <script>
 "use strict";
 /*
@@ -114,20 +128,31 @@
  * fetched again as soon as it changes, and what the person does sent back one request at a time,
  * in order, so a press always reaches the browser before its release. The browser's viewport is
  * fitted to the room this page has for it, so a frame shows 1:1 on a phone and on a laptop alike.
- * A mouse clicks, hovers, drags and scrolls in it, and the keyboard types into it; a finger taps,
- * holds and drags, and types through the text field.
+ * A mouse clicks, hovers, drags and scrolls in it, and the keyboard types into it. A finger taps,
+ * scrolls by dragging, and presses and drags after a hold; a tap on a text field brings up the
+ * phone's keyboard, and what it types reaches the browser as it goes.
  */
-const HOLD_DELAY = 120;          // ms a finger waits before it presses, so the first finger of a pinch clicks nothing
+const HOLD_TIME = 450;           // ms a finger stays put before it presses and holds: a slider's thumb, a "press and hold"
+const TAP_SLOP = 10;             // CSS pixels a finger may stray and still tap or hold; further, it scrolls the page
 const FIT_DELAY = 300;           // ms the room has to stay the same size before the viewport follows it
 const FRAME_GAP = 100;           // ms at least between frame requests, so an animated page doesn't flood the phone
+const FIELDS_GAP = 500;          // ms between looks at the browser's text fields while its page changes
 const RETRY_AFTER = 1500;        // ms before trying again after a failed request
 const LOST_AFTER = 3;            // failed frame requests in a row before saying the connection is lost
 const MULTI_CLICK_TIME = 500;    // ms between the clicks of a double click
 const MULTI_CLICK_DISTANCE = 4;  // CSS pixels the mouse may move between them
+const MULTI_TAP_DISTANCE = 24;   // and a finger between two taps
 const MOST_CLICKS = 3;           // a triple click selects a paragraph
 const LINE_HEIGHT = 40;          // CSS pixels per line, for a wheel that turns by lines
-const SCROLL_STEP = 0.8;         // of the frame's height per tap on a scroll button
+const FLING_SAMPLE = 100;        // ms of a drag's end that say how fast the page goes on once the finger lifts
+const FLING_MIN_SPEED = 0.3;     // CSS pixels per ms the finger must be going for that
+const FLING_STOP_SPEED = 0.02;
+const FLING_DECAY = 325;         // ms in which a flung page slows to about a third of its speed
+const FIELD_ROOM = 72;           // CSS pixels kept in sight below a tapped text field while the keyboard is up
+const KEYBOARD_SHARE = 0.85;     // of the screen the page has left once a phone's keyboard is up, at most
+const NUDGE_TIME = 3000;         // ms the keyboard button stands out when a field took the focus without the keyboard
 const TEXT_CHUNK = 1000;         // characters in one request, as many as the server takes
+const MOST_PRESSES = 100;        // presses of a key in one request, as many as the server takes
 const MINUTE = 60e3;
 const MOUSE_BUTTONS = ["left", "middle", "right"];  // by MouseEvent.button
 // Keys sent as keys, since they type nothing (or Enter, a return the page acts on); every other
@@ -137,23 +162,38 @@ const KEYS = new Set(["Enter", "Tab", "Backspace", "Escape", "Delete", "Home", "
 const SHORTCUT_LETTERS = new Set(["a", "c", "x", "y", "z"]);  // with Control or ⌘: select all, copy, cut, redo, undo
 const CONTROL = 2;               // the stream's modifier bits
 const SHIFT = 8;
+const PLAIN_KEYBOARD = { mode: "text", capitalize: "off", correct: false };  // for a field the page couldn't look into
+const TOUCH_EVENTS = "ontouchend" in window;  // a phone brings its keyboard up only for a focus while a touch ends
+const GRAPHEMES = "Segmenter" in Intl ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
 
 const view = document.getElementById("view");
+const pane = document.getElementById("pane");
 const screen = document.getElementById("screen");
 const painter = screen.getContext("2d");
 const keys = document.getElementById("keys");
-const textField = document.getElementById("text");
 const task = document.getElementById("task");
+const more = document.getElementById("more");
 const botName = document.body.dataset.bot;
 const expires = Number(document.body.dataset.expires);
 
 const waiting = [];                  // requests not sent yet, oldest first: {path, body, then}
 let sending = false;
-let touch = null;                    // the finger down on the browser: {id, point, timer, pressed}
+let shownFrame = 0;                  // the number of the frame shown
+let box = { left: 0, top: 0, width: 0, height: 0 };  // where the frame is shown in the pane
+let rest = { width: 0, height: 0 };  // the view's size with no phone keyboard up
 let held = null;                     // the mouse button down on the browser: {id, button, clicks}
-let lastClick = { time: -Infinity }; // the last mouse press, to count double clicks: {time, x, y, button, count}
-let lastPoint = { x: 0.5, y: 0.5 };  // where the person last touched, for the scroll buttons
+let lastClick = { time: -Infinity }; // the last mouse press or tap, to count double clicks: {time, x, y, button, count}
+let touch = null;                    // the finger on the browser: {id, start, from, moves, mode, timer, point}
+let fling = null;                    // the page going on after a flick: {point, velocity, time, frame}
+let tapped = null;                   // a tap waiting for its touch to end, to bring the keyboard up or down: {field, point}
+let lastTap = { x: 0.5, y: 0.5 };    // where the last tap was, as fractions of the frame
+let typingAt = null;                 // where the keyboard types: {point, field}, the field null if none is known
+let typed = { text: "", caret: 0 };  // what the keyboard typed since the caret last moved some other way, as sent
+let fields = [];                     // the browser's text fields in view, as fractions of the frame
+let focused = null;                  // the field the browser last said had the focus
+let keyboardSeen = false;            // whether a phone's keyboard came up since the textarea took the focus
 let fitTimer = null;
+let nudgeTimer = null;
 let room = "";                       // the room last reported for the browser, "W×H"
 let ended = false;
 
@@ -166,45 +206,45 @@ function start() {
   screen.addEventListener("pointermove", (event) => (isMouse(event) ? moveMouse(event) : moveTouch(event)));
   screen.addEventListener("pointerup", (event) => (isMouse(event) ? releaseMouse(event) : endTouch(event)));
   screen.addEventListener("pointercancel", cancelTouch);
+  screen.addEventListener("touchend", keyboardForTap);
+  pane.addEventListener("pointerdown", tapBeside);
+  view.addEventListener("pointerdown", closeMore, true);
   view.addEventListener("wheel", turnWheel, { passive: false });
   view.addEventListener("contextmenu", (event) => event.preventDefault());
-  keys.addEventListener("keydown", pressKey);
+  keys.addEventListener("keydown", keyDown);
   keys.addEventListener("input", typeKeys);
-  keys.addEventListener("compositionend", typeKeys);
-  keys.addEventListener("focus", () => document.body.classList.add("typing"));
-  keys.addEventListener("blur", () => document.body.classList.remove("typing"));
+  keys.addEventListener("focus", startTyping);
+  keys.addEventListener("blur", stopTyping);
   document.addEventListener("keydown", typeFromAnywhere);
-  document.getElementById("typing").addEventListener("submit", typeFieldAndEnter);
-  document.getElementById("send").addEventListener("click", typeField);
-  textField.addEventListener("blur", fitLater);
+  document.getElementById("keyboard").addEventListener("click", openKeyboardByHand);
   for (const button of document.querySelectorAll("[data-key]")) {
-    button.addEventListener("click", () => send({ kind: "key", key: button.dataset.key }));
+    button.addEventListener("pointerdown", (event) => event.preventDefault());  // the keyboard stays up
+    button.addEventListener("click", () => pressKeyButton(button.dataset.key));
   }
-  for (const button of document.querySelectorAll("[data-scroll]")) {
-    button.addEventListener("click",
-      () => send({ kind: "wheel", ...lastPoint, dx: 0, dy: Number(button.dataset.scroll) * SCROLL_STEP }));
-  }
-  task.addEventListener("click", () => task.classList.toggle("open"));
+  task.addEventListener("click", toggleMore);
+  document.getElementById("more-toggle").addEventListener("click", toggleMore);
   document.getElementById("done").addEventListener("click",
     () => finish("done", `✅ Done, thank you. ${botName} carries on; you can close this page.`));
   document.getElementById("cant").addEventListener("click",
     () => finish("gave-up", `Thanks for trying. ${botName} takes it from here; you can close this page.`));
+  window.visualViewport?.addEventListener("resize", followVisibleArea);
+  window.visualViewport?.addEventListener("scroll", followVisibleArea);
   new ResizeObserver(() => {
-    sizeScreen();
+    layOut();
     fitLater();
   }).observe(view);
   showTimeLeft();
   setInterval(showTimeLeft, MINUTE / 4);
   followFrames();
+  followFields();
 }
 
 async function followFrames() {
-  let seq = 0;
   let failures = 0;
   while (!ended) {
     const asked = Date.now();
     try {
-      seq = await nextFrame(seq);
+      shownFrame = await nextFrame(shownFrame);
       failures = 0;
     } catch (error) {
       failures += 1;
@@ -250,16 +290,53 @@ function paint(image) {
   if (screen.width !== image.naturalWidth || screen.height !== image.naturalHeight) {
     screen.width = image.naturalWidth;
     screen.height = image.naturalHeight;
-    sizeScreen();
+    layOut();
   }
   painter.drawImage(image, 0, 0);
 }
 
-/** The frame as large as the view shows it whole: 1:1 once the viewport fits the view. */
-function sizeScreen() {
-  const scale = Math.min(view.clientWidth / screen.width, view.clientHeight / screen.height);
-  screen.style.width = `${screen.width * scale}px`;
-  screen.style.height = `${screen.height * scale}px`;
+/**
+ * Shows the frame as large as the view takes it whole: 1:1 once the viewport fits the view. With a
+ * phone's keyboard up the frame keeps that size, and the pane scrolls so the tapped field stays in
+ * sight above the keyboard.
+ */
+function layOut() {
+  const keyboardUp = typingOnTouch();
+  if (!keyboardUp) rest = { width: view.clientWidth, height: view.clientHeight };
+  const scale = Math.min(rest.width / screen.width, rest.height / screen.height);
+  const width = screen.width * scale;
+  const height = screen.height * scale;
+  box = { left: (rest.width - width) / 2, top: (rest.height - height) / 2, width, height };
+  Object.assign(screen.style, { left: px(box.left), top: px(box.top), width: px(width), height: px(height) });
+  placeKeys();
+  pane.scrollTop = keyboardUp && typingAt ? box.top + typingAt.point.y * height + FIELD_ROOM - view.clientHeight : 0;
+}
+
+/** The textarea over the field the keyboard types into, or the point last pressed, so a phone or an input method shows what it needs there. */
+function placeKeys() {
+  const spot = typingAt?.field ?? { ...(typingAt?.point ?? { x: 0, y: 0 }), width: 0, height: 0 };
+  Object.assign(keys.style, {
+    left: px(box.left + spot.x * box.width), top: px(box.top + spot.y * box.height),
+    width: px(Math.max(1, spot.width * box.width)), height: px(Math.max(24, spot.height * box.height)),
+  });
+}
+
+/**
+ * With a phone's keyboard up, the page takes the part of the screen above it, where the phone
+ * may have moved it. A keyboard that went down while the textarea kept the focus (Android's back
+ * button) ends the typing, so the next tap on a field brings it up again.
+ */
+function followVisibleArea() {
+  const visible = window.visualViewport;
+  if (!visible) return;
+  const fit = typingOnTouch() && Math.abs(visible.scale - 1) < 0.01;  // not while this page is zoomed in
+  Object.assign(document.body.style, fit
+    ? { height: px(visible.height), bottom: "auto", transform: `translateY(${visible.offsetTop}px)` }
+    : { height: "", bottom: "", transform: "" });
+  if (!typingOnTouch()) return;
+  const keyboardUp = visible.height * visible.scale < document.documentElement.clientHeight * KEYBOARD_SHARE;
+  if (keyboardUp) keyboardSeen = true;
+  else if (keyboardSeen) keys.blur();
 }
 
 function fitLater() {
@@ -269,12 +346,12 @@ function fitLater() {
 
 /**
  * Tells the server the room this page has for the browser, which fits its viewport to it. Not
- * while the text field has the focus: a phone's keyboard is up, and the browser keeps its size.
+ * while a phone's keyboard is up: the browser keeps its size, and the page scrolls instead.
  */
 function reportRoom() {
   const width = view.clientWidth;
   const height = view.clientHeight;
-  if (ended || document.activeElement === textField || `${width}×${height}` === room) return;
+  if (ended || typingOnTouch() || `${width}×${height}` === room) return;
   room = `${width}×${height}`;
   enqueue("screen", { width, height });
 }
@@ -288,14 +365,26 @@ function useMouseLayout(event) {
   if (isMouse(event)) document.body.classList.add("mouse");
 }
 
+function usesMouse() {
+  return document.body.classList.contains("mouse");
+}
+
+function typingOnTouch() {
+  return document.body.classList.contains("typing") && !usesMouse();
+}
+
 function pressMouse(event) {
   event.preventDefault();  // the focus stays on the keyboard's way in
-  keys.focus({ preventScroll: true });
   const button = MOUSE_BUTTONS[event.button];
   if (!button || held) return;
   screen.setPointerCapture(event.pointerId);
-  held = { id: event.pointerId, button, clicks: clickCount(event, button) };
-  send({ kind: "press", ...pointOf(event), button, clicks: held.clicks, modifiers: modifiersOf(event) });
+  held = { id: event.pointerId, button, clicks: clickCount(event, button, MULTI_CLICK_DISTANCE) };
+  const point = pointOf(event);
+  send({ kind: "press", ...point, button, clicks: held.clicks, modifiers: modifiersOf(event) });
+  typingAt = { point, field: null };
+  forgetTyped();
+  placeKeys();
+  keys.focus({ preventScroll: true });
 }
 
 function moveMouse(event) {
@@ -308,10 +397,10 @@ function releaseMouse(event) {
   held = null;
 }
 
-/** Which click of a double or triple click a press is: the same button again, soon and close by. */
-function clickCount(event, button) {
+/** Which click of a double or triple click a press or tap is: the same button again, soon and close by. */
+function clickCount(event, button, distance) {
   const again = button === lastClick.button && event.timeStamp - lastClick.time <= MULTI_CLICK_TIME
-    && Math.hypot(event.clientX - lastClick.x, event.clientY - lastClick.y) <= MULTI_CLICK_DISTANCE;
+    && Math.hypot(event.clientX - lastClick.x, event.clientY - lastClick.y) <= distance;
   const count = again ? (lastClick.count % MOST_CLICKS) + 1 : 1;
   lastClick = { time: event.timeStamp, x: event.clientX, y: event.clientY, button, count };
   return count;
@@ -319,57 +408,271 @@ function clickCount(event, button) {
 
 function turnWheel(event) {
   event.preventDefault();
-  const box = screen.getBoundingClientRect();
-  const unit = { [WheelEvent.DOM_DELTA_LINE]: LINE_HEIGHT, [WheelEvent.DOM_DELTA_PAGE]: box.height }[event.deltaMode] ?? 1;
-  send({ kind: "wheel", ...pointOf(event), dx: (event.deltaX * unit) / box.width, dy: (event.deltaY * unit) / box.height });
+  const shown = screen.getBoundingClientRect();
+  const unit = { [WheelEvent.DOM_DELTA_LINE]: LINE_HEIGHT, [WheelEvent.DOM_DELTA_PAGE]: shown.height }[event.deltaMode] ?? 1;
+  send({ kind: "wheel", ...pointOf(event), dx: (event.deltaX * unit) / shown.width, dy: (event.deltaY * unit) / shown.height });
 }
 
+/**
+ * A finger going down on the browser. What it does is only known once it moves (it scrolls), lifts
+ * (it taps) or stays put for HOLD_TIME (it presses and holds, and drags from there).
+ */
 function startTouch(event) {
+  event.preventDefault();  // no mouse events follow it, whose press would take the focus off the keyboard's way in
+  stopFling();
+  tapped = null;
   if (touch) {
-    cancelTouch();  // a second finger: the person is zooming, not pressing
+    cancelTouch();  // a second finger: the person is zooming this page
     return;
   }
   screen.setPointerCapture(event.pointerId);
-  touch = { id: event.pointerId, point: pointOf(event), pressed: false };
-  touch.timer = setTimeout(pressTouch, HOLD_DELAY);
-  lastPoint = touch.point;
-}
-
-function pressTouch() {
-  touch.pressed = true;
-  send({ kind: "press", ...touch.point });
+  touch = { id: event.pointerId, start: pointOf(event), from: clientPoint(event), moves: [movement(event)], mode: "deciding" };
+  touch.timer = setTimeout(startHold, HOLD_TIME);
 }
 
 function moveTouch(event) {
   if (touch?.id !== event.pointerId) return;
-  touch.point = pointOf(event);
-  if (touch.pressed) send({ kind: "move", ...touch.point, button: "left" });
+  const at = clientPoint(event);
+  if (touch.mode === "deciding" && Math.hypot(at.x - touch.from.x, at.y - touch.from.y) > TAP_SLOP) {
+    clearTimeout(touch.timer);
+    touch.mode = "scrolling";
+  }
+  if (touch.mode === "scrolling") {
+    scrollPage(touch.start, touch.from.x - at.x, touch.from.y - at.y);
+    touch.from = at;
+    touch.moves.push(movement(event));
+  } else if (touch.mode === "holding") {
+    touch.point = pointOf(event);
+    send({ kind: "move", ...touch.point, button: "left" });
+    showHoldMark(at);
+  }
 }
 
 function endTouch(event) {
   if (touch?.id !== event.pointerId) return;
   clearTimeout(touch.timer);
-  touch.point = pointOf(event);
-  if (!touch.pressed) pressTouch();
-  send({ kind: "release", ...touch.point });
+  const ending = touch;
   touch = null;
+  if (ending.mode === "deciding") {
+    tap(event, ending.start);
+  } else if (ending.mode === "holding") {
+    letGo(pointOf(event));
+  } else {
+    flingOn(ending.start, [...ending.moves, movement(event)]);
+  }
 }
 
 function cancelTouch() {
   if (!touch) return;
   clearTimeout(touch.timer);
-  if (touch.pressed) send({ kind: "release", ...touch.point });
+  if (touch.mode === "holding") letGo(touch.point);
   touch = null;
+}
+
+function startHold() {
+  touch.mode = "holding";
+  touch.point = touch.start;
+  send({ kind: "press", ...touch.point });
+  showHoldMark(touch.from);
+  navigator.vibrate?.(10);
+}
+
+function letGo(point) {
+  send({ kind: "release", ...point });
+  document.body.classList.remove("holding");
+}
+
+function showHoldMark(at) {
+  const area = view.getBoundingClientRect();
+  const mark = document.getElementById("hold-mark");
+  mark.style.left = px(at.x - area.left);
+  mark.style.top = px(at.y - area.top);
+  document.body.classList.add("holding");
+}
+
+/**
+ * A quick tap: a click where the finger went down, with no move between its press and release, so
+ * it selects nothing. Whether it lands on a text field decides the keyboard as the touch ends; once
+ * the browser has taken it, the page asks what has the focus, to put that right.
+ */
+function tap(event, point) {
+  const clicks = clickCount(event, "left", MULTI_TAP_DISTANCE);
+  send({ kind: "press", ...point, clicks });
+  send({ kind: "release", ...point, clicks }, checkFocus);
+  forgetTyped();
+  lastTap = point;
+  tapped = { field: fieldAt(point), point };
+  if (!TOUCH_EVENTS) keyboardForTap();
+}
+
+/** Brings the keyboard up for a tap on a text field, or down for one elsewhere. */
+function keyboardForTap() {
+  if (!tapped) return;
+  const { field, point } = tapped;
+  tapped = null;
+  if (field) {
+    openKeyboard(field, point);
+  } else {
+    keys.blur();
+  }
+}
+
+/** A tap beside the frame puts the keyboard away. */
+function tapBeside(event) {
+  if (event.target === pane && !isMouse(event)) keys.blur();
+}
+
+function fieldAt(point) {
+  return fields.find((field) => field.x <= point.x && point.x <= field.x + field.width
+    && field.y <= point.y && point.y <= field.y + field.height) ?? null;
+}
+
+/** The scroll a finger's drag or a fling makes, by CSS pixels of this page, over the point it started on. */
+function scrollPage(point, dx, dy) {
+  const shown = screen.getBoundingClientRect();
+  send({ kind: "wheel", ...point, dx: dx / shown.width, dy: dy / shown.height });
+}
+
+/** A drag that ends with the finger still going: the page goes on, slowing down, as a phone's does. */
+function flingOn(point, moves) {
+  const last = moves[moves.length - 1];
+  const first = moves.find((move) => last.time - move.time <= FLING_SAMPLE);
+  const time = last.time - first.time;
+  if (time <= 0) return;
+  const velocity = { x: (first.x - last.x) / time, y: (first.y - last.y) / time };
+  if (Math.hypot(velocity.x, velocity.y) < FLING_MIN_SPEED) return;
+  fling = { point, velocity, time: performance.now() };
+  fling.frame = requestAnimationFrame(glide);
+}
+
+function glide(now) {
+  const kept = Math.exp(-Math.max(0, now - fling.time) / FLING_DECAY);
+  const distance = FLING_DECAY * (1 - kept);  // how far the speed takes it as it falls
+  scrollPage(fling.point, fling.velocity.x * distance, fling.velocity.y * distance);
+  fling.velocity = { x: fling.velocity.x * kept, y: fling.velocity.y * kept };
+  fling.time = now;
+  if (Math.hypot(fling.velocity.x, fling.velocity.y) < FLING_STOP_SPEED) {
+    fling = null;
+  } else {
+    fling.frame = requestAnimationFrame(glide);
+  }
+}
+
+function stopFling() {
+  if (fling) cancelAnimationFrame(fling.frame);
+  fling = null;
 }
 
 /** Where the pointer is, as fractions of the frame across and down. */
 function pointOf(event) {
-  const box = screen.getBoundingClientRect();
-  return { x: within((event.clientX - box.left) / box.width), y: within((event.clientY - box.top) / box.height) };
+  const shown = screen.getBoundingClientRect();
+  return { x: within((event.clientX - shown.left) / shown.width), y: within((event.clientY - shown.top) / shown.height) };
+}
+
+function clientPoint(event) {
+  return { x: event.clientX, y: event.clientY };
+}
+
+function movement(event) {
+  return { time: event.timeStamp, x: event.clientX, y: event.clientY };
 }
 
 function within(fraction) {
   return Math.min(1, Math.max(0, fraction));
+}
+
+/**
+ * Brings the phone's keyboard up, the kind the field asks for, with the textarea over the field.
+ * Only while a touch ends or a button is tapped does a phone bring it up.
+ */
+function openKeyboard(field, point) {
+  const changed = setKeyboard(field?.keyboard ?? PLAIN_KEYBOARD);
+  if (changed && document.activeElement === keys) keys.blur();  // a keyboard that's up stays the kind it came up as
+  typingAt = { point, field };
+  forgetTyped();
+  layOut();
+  keys.focus({ preventScroll: true });
+}
+
+/** ⌨: the keyboard for the field the browser said has the focus, or for wherever the person last tapped. */
+function openKeyboardByHand() {
+  document.body.classList.remove("nudge");
+  openKeyboard(focused, focused ? { x: focused.x + focused.width / 2, y: focused.y + focused.height / 2 } : lastTap);
+}
+
+/** Sets the textarea up as the field would set a phone's keyboard; whether that changed it. */
+function setKeyboard(keyboard) {
+  const wanted = JSON.stringify(keyboard);
+  if (keys.dataset.keyboard === wanted) return false;
+  keys.dataset.keyboard = wanted;
+  keys.inputMode = keyboard.mode;
+  keys.setAttribute("autocapitalize", keyboard.capitalize);
+  keys.setAttribute("autocorrect", keyboard.correct ? "on" : "off");
+  keys.spellcheck = keyboard.correct;
+  return true;
+}
+
+function startTyping() {
+  keyboardSeen = false;
+  document.body.classList.add("typing");
+  followVisibleArea();
+  layOut();
+}
+
+function stopTyping() {
+  document.body.classList.remove("typing");
+  typingAt = null;
+  followVisibleArea();
+  layOut();
+  fitLater();
+}
+
+/** The browser's text fields, looked at again whenever its page has changed, for the next tap. */
+async function followFields() {
+  let lookedAt = 0;  // the frame they were last looked at on
+  while (!ended) {
+    await sleep(FIELDS_GAP);
+    if (!usesMouse() && shownFrame !== lookedAt) {
+      lookedAt = shownFrame;
+      await lookAtFields();
+    }
+  }
+}
+
+/** Asks the browser for its text fields in view and its focus ({fields, focus}); null if it couldn't say. */
+async function lookAtFields() {
+  try {
+    const response = await fetch("fields", { cache: "no-store" });
+    if (response.status === 410) end("This link has ended.");
+    if (!response.ok) return null;
+    const seen = await response.json();
+    fields = seen.fields;
+    if (seen.focus !== "frame") focused = seen.focus;
+    return seen;
+  } catch (error) {
+    return null;  // a look that didn't get through: the next one may
+  }
+}
+
+/**
+ * After a tap, puts the keyboard right: down if nothing to type into has the focus, and the ⌨ button
+ * standing out if a field the page didn't know of took it (a phone can't bring the keyboard up now).
+ * A focus in a frame from another site can't be looked into, so it changes nothing.
+ */
+async function checkFocus() {
+  const seen = await lookAtFields();
+  if (!seen || seen.focus === "frame") return;
+  if (seen.focus && !typingOnTouch()) {
+    nudgeKeyboardButton();
+  } else if (!seen.focus && typingOnTouch()) {
+    keys.blur();
+  }
+}
+
+function nudgeKeyboardButton() {
+  document.body.classList.add("nudge");
+  clearTimeout(nudgeTimer);
+  nudgeTimer = setTimeout(() => document.body.classList.remove("nudge"), NUDGE_TIME);
 }
 
 /**
@@ -379,24 +682,26 @@ function within(fraction) {
 function typeFromAnywhere(event) {
   if (event.target !== document.body || ended) return;
   keys.focus({ preventScroll: true });
-  pressKey(event);
+  keyDown(event);
 }
 
 /**
  * A key going down while the browser has the keyboard. The keys that type nothing and the
- * shortcuts go as keys; the rest type into the textarea, and typeKeys sends what they typed, so
- * dead keys, input methods and pastes type what they would anywhere else.
+ * shortcuts go as keys, and so does Backspace with nothing typed before the caret; the rest type
+ * into the textarea, and typeKeys sends what they did.
  */
-function pressKey(event) {
+function keyDown(event) {
   if (event.isComposing || event.keyCode === 229) return;  // an input method's
   const key = keyToSend(event);
   if (!key) return;
   event.preventDefault();
-  send({ kind: "key", key, modifiers: modifiersOf(event) });
+  sendKey(key, 1, modifiersOf(event));
+  forgetTyped();  // the caret moved, or the text changed, where typeKeys can't follow
 }
 
 /** The key a key going down is sent as, or null for one that types. */
 function keyToSend(event) {
+  if (event.key === "Backspace" && keys.selectionEnd > 0) return null;  // it deletes what was typed, which typeKeys sends
   if (KEYS.has(event.key)) return event.key;
   const letter = event.key.toLowerCase();
   const shortcut = (event.ctrlKey || event.metaKey) && !event.altKey;  // Control+Alt is AltGr on Windows, which types
@@ -411,23 +716,56 @@ function modifiersOf(event) {
   return (event.ctrlKey || event.metaKey || event.altKey ? CONTROL : 0) | (event.shiftKey ? SHIFT : 0);
 }
 
-function typeKeys(event) {
-  if (event.isComposing) return;  // compositionend brings it
-  const text = keys.value;
+/**
+ * What the keyboard did to the textarea, sent as the change from what it had typed: the caret
+ * moved to the end of what it took away, Backspace for each character of that, and what it put
+ * in. So autocorrect, predictive text, input methods, dictation and pastes type into the browser
+ * what they would anywhere, as they go.
+ */
+function typeKeys() {
+  const change = difference(characters(typed.text), characters(keys.value));
+  moveCaret(change.at + change.removed - typed.caret);
+  sendKey("Backspace", change.removed);
+  sendText(change.added);
+  const caret = characters(keys.value.slice(0, keys.selectionEnd)).length;
+  moveCaret(caret - change.at - characters(change.added).length);
+  typed = { text: keys.value, caret };
+}
+
+/** Where two lists of characters differ: from at, removed characters of before became added. */
+function difference(before, after) {
+  let at = 0;
+  while (at < before.length && at < after.length && before[at] === after[at]) at += 1;
+  let same = 0;  // characters alike at the end
+  while (same < before.length - at && same < after.length - at
+         && before[before.length - 1 - same] === after[after.length - 1 - same]) same += 1;
+  return { at, removed: before.length - at - same, added: after.slice(at, after.length - same).join("") };
+}
+
+/** The characters of text as a person counts them, which Backspace and the arrow keys go by. */
+function characters(text) {
+  return GRAPHEMES ? Array.from(GRAPHEMES.segment(text), (part) => part.segment) : Array.from(text);
+}
+
+function moveCaret(steps) {
+  sendKey(steps < 0 ? "ArrowLeft" : "ArrowRight", Math.abs(steps));
+}
+
+/** The textarea starts afresh: the browser's caret or field changed in ways it can't follow. */
+function forgetTyped() {
   keys.value = "";
-  sendText(text);
+  typed = { text: "", caret: 0 };
 }
 
-/** The keyboard's return key in the text field: its text, then Enter, as in a field of the browser's own. */
-function typeFieldAndEnter(event) {
-  event.preventDefault();
-  typeField();
-  send({ kind: "key", key: "Enter" });
+function pressKeyButton(key) {
+  sendKey(key);
+  forgetTyped();
 }
 
-function typeField() {
-  sendText(textField.value);
-  textField.value = "";
+function sendKey(key, times = 1, modifiers = 0) {
+  for (let left = times; left > 0; left -= MOST_PRESSES) {
+    send({ kind: "key", key, modifiers, times: Math.min(left, MOST_PRESSES) });
+  }
 }
 
 function sendText(text) {
@@ -437,8 +775,9 @@ function sendText(text) {
   }
 }
 
-function send(action) {
-  enqueue("input", action);
+/** Sends an action to the browser; then, if given, runs once the server has taken it. */
+function send(action, then) {
+  enqueue("input", action, then);
 }
 
 function finish(outcome, note) {
@@ -446,29 +785,40 @@ function finish(outcome, note) {
   sendWaiting();
 }
 
-function enqueue(path, body) {
+function enqueue(path, body, then) {
   const last = waiting[waiting.length - 1];
-  const merged = last?.path === path ? merge(path, last.body, body) : null;
+  const merged = last?.path === path && !last.then && !then ? merge(path, last.body, body) : null;
   if (merged) {
     last.body = merged;
   } else {
-    waiting.push({ path, body });
+    waiting.push({ path, body, then });
   }
   sendWaiting();
 }
 
 /**
  * What two requests to path waiting in a row do, as one, or null if they can't be one: only the
- * newest room and pointer position matter, and wheel turns and typed text add up.
+ * newest room and pointer position matter, and wheel turns, typed text and presses of a key add up.
  */
 function merge(path, earlier, later) {
   if (path === "screen") return later;
   if (earlier.kind !== later.kind) return null;
-  if (later.kind === "move" && earlier.button === later.button) return later;
+  if (later.kind === "move") return earlier.button === later.button ? later : null;
   if (later.kind === "wheel") return { ...later, dx: earlier.dx + later.dx, dy: earlier.dy + later.dy };
-  const text = `${earlier.text}${later.text}`;
-  if (later.kind === "text" && Array.from(text).length <= TEXT_CHUNK) return { ...later, text };
+  if (later.kind === "key") return mergeKeys(earlier, later);
+  if (later.kind === "text") return mergeText(earlier, later);
   return null;
+}
+
+function mergeKeys(earlier, later) {
+  const times = earlier.times + later.times;
+  const same = earlier.key === later.key && earlier.modifiers === later.modifiers;
+  return same && times <= MOST_PRESSES ? { ...later, times } : null;
+}
+
+function mergeText(earlier, later) {
+  const text = `${earlier.text}${later.text}`;
+  return Array.from(text).length <= TEXT_CHUNK ? { ...later, text } : null;
 }
 
 async function sendWaiting() {
@@ -500,6 +850,19 @@ async function post(path, body) {
   return response;
 }
 
+function toggleMore() {
+  setMoreOpen(more.hidden);
+}
+
+function closeMore() {
+  setMoreOpen(false);
+}
+
+function setMoreOpen(open) {
+  more.hidden = !open;
+  task.setAttribute("aria-expanded", String(open));
+}
+
 /** Ends the page, once: the frame request still out when Done is through gets a 410 too. */
 function end(note) {
   if (ended) return;
@@ -521,8 +884,15 @@ function showTimeLeft() {
   document.getElementById("time-left").textContent = `the link works for ${minutes} more min`;
 }
 
+/** How the connection is: in the panel, and over the browser unless it's live. */
 function showState(text) {
   document.getElementById("state").textContent = text;
+  document.getElementById("state-text").textContent = text;
+  document.body.classList.toggle("live", text === "Live");
+}
+
+function px(value) {
+  return `${value}px`;
 }
 
 function sleep(ms) {

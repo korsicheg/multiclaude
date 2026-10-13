@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from multiclaude import paths
 from multiclaude.log import log
 from multiclaude.takeover.browser import NoBrowser, Session
+from multiclaude.takeover.fields import Fields
 from multiclaude.takeover.notice import PrintedLink, TelegramLink
 from multiclaude.takeover.page import PageServer, page_html
 from multiclaude.takeover.stream import Stream
@@ -49,9 +50,10 @@ class Stopped(Exception):
 
 @dataclass(frozen=True)
 class Browser:
-    """The browser taken over: its stream (frames in, input out) and its viewport."""
+    """The browser taken over: its stream (frames in, input out), its viewport and its text fields."""
     stream: Stream
     viewport: Fitting
+    fields: Fields
 
     def hand_back(self):
         """Put the viewport back as it was and let go of the stream. A browser that has closed is
@@ -146,7 +148,7 @@ def main(argv):
         session = Session(options.session, options.home)
         port = session.stream_port()
         with only_take_over(port):
-            browser = Browser(Stream.connect(port), Fitting(session))
+            browser = Browser(Stream.connect(port), Fitting(session), Fields(session))
             outcome = TakeOver(browser, Tunnel(), notice, options.minutes * 60).run(options.task)
     except (Busy, Stopped, NoBrowser, TunnelError, TelegramError, WebSocketClosed, OSError) as e:
         print(f"takeover: {e}", file=sys.stderr)

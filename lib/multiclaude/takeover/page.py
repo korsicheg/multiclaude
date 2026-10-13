@@ -5,12 +5,15 @@ logs nothing, since every request line carries the token.
   GET  /<token>/                the page
   GET  /<token>/frame?after=N   the browser's latest frame once it's newer than frame N (X-Frame:
                                 its number), held up to FRAME_WAIT seconds; 204 if none came
+  GET  /<token>/fields          the browser's text fields in view and which has the focus, for a
+                                phone's keyboard (fields.py); 502 if agent-browser couldn't say
   POST /<token>/input           one action, as controls.py takes it
   POST /<token>/screen          {"width", "height"}: the CSS pixels the page has for the browser, which
                                 its viewport is fitted to (viewport.py). A fit agent-browser fails is
                                 logged, and answered 204 all the same: the page shows the frames scaled.
   POST /<token>/end             {"outcome": "done" | "gave-up"}: the person tapped Done or I can't do it
-Once the take-over has ended, everything under the token answers 410."""
+Once the take-over has ended, everything under the token answers 410, and so do fields and screen
+once the browser has closed, since any agent-browser command for its session would start it again."""
 import hmac
 import html
 import http.server
@@ -49,8 +52,8 @@ class PageServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, token, browser, ending, page):
-        """browser: the Browser taken over (its stream and viewport); ending: the take-over's
-        Ending, which the page's Done ends."""
+        """browser: the Browser taken over (its stream, viewport and text fields); ending: the
+        take-over's Ending, which the page's Done ends."""
         super().__init__(("127.0.0.1", 0), Handler)
         self.token, self.browser, self.ending, self.page = token, browser, ending, page.encode()
 
@@ -78,6 +81,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(200, self.server.page, "text/html; charset=utf-8", {"Content-Security-Policy": PAGE_POLICY})
         elif route == "frame":
             self.serve_frame()
+        elif route == "fields":
+            self.serve_fields()
         else:
             self.reply(404)
 
@@ -117,6 +122,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self.reply(200, frame.jpeg, "image/jpeg", {"X-Frame": str(frame.seq)})
 
+    def serve_fields(self):
+        if self.browser_gone():
+            return self.reply(410)
+        try:
+            fields = self.server.browser.fields.read()
+        except (NoBrowser, ValueError):
+            return self.reply(502)  # the page asks again once the browser changes
+        self.reply(200, json.dumps(fields).encode(), "application/json")
+
     def take_input(self):
         action = self.read_json()
         if self.server.ending.over:
@@ -134,7 +148,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def take_screen(self):
         size = self.read_json()
-        if self.server.ending.over:
+        if self.browser_gone():
             return self.reply(410)
         try:
             self.server.browser.viewport.fit(size)
@@ -150,6 +164,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply(400)
         self.server.ending.finish(outcome)
         self.reply(204)
+
+    def browser_gone(self):
+        """Whether the take-over is over, or the browser closed, which ends it in a moment."""
+        return self.server.ending.over or self.server.browser.stream.closed
 
     def read_json(self):
         """The request's JSON object, or None. A body too big to read is left, with the connection."""

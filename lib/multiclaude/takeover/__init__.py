@@ -5,6 +5,7 @@ sees that browser live on their phone or computer, works in it, and taps Done.
   browser   the agent-browser session: its stream server and its viewport
   stream    the WebSocket bridge to it: the latest frame in, input events out
   viewport  the viewport fitted to the person's screen, and put back afterwards
+  fields    the text fields in view and the focus, so a tap on one brings up a phone's keyboard
   controls  what the person does on the page, as the stream's input events
   page      the web server for the page, every path under a secret token
   tunnel    the Cloudflare quick tunnel that takes the page to the phone

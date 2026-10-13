@@ -1,6 +1,6 @@
 """Browser take-overs (bin/takeover, lib/multiclaude/takeover): finding the browser's stream, the
-bridge to it, fitting its viewport to the person's screen, the page's server, the tunnel, and how a
-take-over ends. agent-browser, its stream server, cloudflared and Telegram are fakes; nothing leaves
+bridge to it, fitting its viewport to the person's screen, its text fields for a phone's keyboard,
+the page's server, the tunnel, and how a take-over ends. agent-browser, its stream server, cloudflared and Telegram are fakes; nothing leaves
 the machine."""
 import base64
 import hashlib
@@ -31,11 +31,11 @@ GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 def tk(lib, monkeypatch):
     """The takeover package, with short waits."""
     from multiclaude import paths, telegram, websocket
-    from multiclaude.takeover import browser, controls, notice, page, run, stream, tunnel, viewport
+    from multiclaude.takeover import browser, controls, fields, notice, page, run, stream, tunnel, viewport
     monkeypatch.setattr(page, "FRAME_WAIT", 0.2)
     monkeypatch.setattr(run, "CHECK_EVERY", 0.02)
     return SimpleNamespace(paths=paths, telegram=telegram, websocket=websocket, browser=browser, controls=controls,
-                           notice=notice, page=page, run=run, stream=stream, tunnel=tunnel, viewport=viewport)
+                           fields=fields, notice=notice, page=page, run=run, stream=stream, tunnel=tunnel, viewport=viewport)
 
 
 def jpeg(width, height):
@@ -272,12 +272,14 @@ def test_the_bridge_follows_the_stream_server_and_sends_it_input(tk):
 # --- the viewport ----------------------------------------------------------------------------------
 
 class FakeSession:
-    """An agent-browser session as a take-over sees it: its stream's port, its viewport, and each
-    viewport it was given (set). fail: the error each viewport command fails with, if any."""
+    """An agent-browser session as a take-over sees it: its stream's port, its viewport, each
+    viewport it was given (set), and what its page answers to an eval of FIELDS_SCRIPT (found), with
+    each script it was given (evals). fail: the error each command fails with, if any."""
 
     def __init__(self, tk, port=41713, viewport=(1280, 633, 1.0)):
         self.browser, self.port = tk.browser, port
         self.current, self.set, self.fail = tk.browser.Viewport(*viewport), [], None
+        self.found, self.evals = {"width": 1280, "height": 633, "fields": [], "focus": None}, []
 
     def stream_port(self):
         return self.port
@@ -285,6 +287,11 @@ class FakeSession:
     def viewport(self):
         self.check()
         return self.current
+
+    def eval(self, script):
+        self.check()
+        self.evals.append(script)
+        return self.found
 
     def set_viewport(self, viewport):
         self.check()
@@ -350,6 +357,66 @@ def test_a_viewport_never_fitted_is_left_alone(tk):
     assert session.set == []
 
 
+# --- the text fields -------------------------------------------------------------------------------
+
+EMAIL_KEYBOARD = {"mode": "email", "capitalize": "off", "correct": False}
+
+
+def found(x=64, y=63.3, width=640, height=31.65, **keyboard):
+    """A field as FIELDS_SCRIPT finds it on a 1280×633 page: an email address's, unless keyboard says otherwise."""
+    return {"x": x, "y": y, "width": width, "height": height, "type": "email", "inputmode": None,
+            "autocapitalize": None, "autocorrect": None, "spellcheck": None, **keyboard}
+
+
+def found_on_the_page(*fields, focus=None):
+    return {"width": 1280, "height": 633, "fields": list(fields or [found()]), "focus": focus}
+
+
+def test_the_fields_in_view_are_fractions_of_the_viewport(tk):
+    seen = tk.fields.in_view(found_on_the_page(found(), found(x=1200, y=600, width=200, height=100)))
+
+    assert [(f["x"], f["y"], f["width"], f["height"]) for f in seen["fields"]] == [
+        (0.05, 0.1, 0.5, 0.05), (0.9375, 0.9479, 0.0625, 0.0521)]  # the second one cut off where the viewport ends
+
+
+def test_a_field_outside_the_viewport_is_left_out_unless_it_has_the_focus(tk):
+    below = found(y=700)
+
+    seen = tk.fields.in_view(found_on_the_page(below, focus=below))
+
+    assert seen["fields"] == [] and seen["focus"]["keyboard"] == EMAIL_KEYBOARD
+
+
+@pytest.mark.parametrize("field, keyboard", [
+    (found(type="text"), {"mode": "text", "capitalize": "sentences", "correct": True}),
+    (found(type="textarea", spellcheck="false"), {"mode": "text", "capitalize": "sentences", "correct": False}),
+    (found(type="password"), {"mode": "text", "capitalize": "off", "correct": False}),
+    (found(type="number"), {"mode": "decimal", "capitalize": "off", "correct": False}),
+    (found(type="text", inputmode="numeric", autocapitalize="off", autocorrect="off"),
+     {"mode": "numeric", "capitalize": "off", "correct": False}),
+    (found(type="editable", inputmode="none", autocapitalize="shouting", autocorrect="maybe"),
+     {"mode": "text", "capitalize": "sentences", "correct": True})])
+def test_each_field_brings_up_the_keyboard_a_phone_would_for_it(tk, field, keyboard):
+    """Its own inputmode, autocapitalize and autocorrect where it has them, a phone's defaults for its type where not."""
+    assert tk.fields.in_view(found_on_the_page(field))["fields"][0]["keyboard"] == keyboard
+
+
+def test_a_focus_in_a_frame_from_another_site_is_only_known_to_be_there(tk):
+    assert tk.fields.in_view(found_on_the_page(focus="frame"))["focus"] == "frame"
+
+
+@pytest.mark.parametrize("result", [
+    None, "nope", [], {"width": 1280, "height": 633, "fields": []},
+    {"width": 0, "height": 633, "fields": [], "focus": None},
+    {"width": "wide", "height": 633, "fields": [], "focus": None},
+    found_on_the_page(found(x=float("nan"))), found_on_the_page(found(width=-5)), found_on_the_page(found(y=True)),
+    found_on_the_page(found(type=["email"])), found_on_the_page(focus=42), found_on_the_page("field")])
+def test_what_isnt_the_fields_in_view_is_refused(tk, result):
+    """The page's own scripts could meddle with what the script finds."""
+    with pytest.raises(ValueError):
+        tk.fields.in_view(result)
+
+
 # --- the page --------------------------------------------------------------------------------------
 
 @pytest.fixture
@@ -358,7 +425,7 @@ def page(tk):
     stream, browser = socket_stream(tk)
     session = FakeSession(tk)
     ending = tk.run.Ending()
-    taken = tk.run.Browser(stream, tk.viewport.Fitting(session))
+    taken = tk.run.Browser(stream, tk.viewport.Fitting(session), tk.fields.Fields(session))
     server = tk.page.PageServer(TOKEN, taken, ending, tk.page.page_html("Tick **the** box & <tap> Done", time.time() + 60))
     threading.Thread(target=server.serve_forever, args=(0.02,), daemon=True).start()  # quick to shut down
     yield SimpleNamespace(stream=stream, browser=browser, session=session, ending=ending,
@@ -387,7 +454,7 @@ def test_the_page_shows_the_task_as_plain_text_under_a_strict_policy(page):
     code, headers, body = fetch(page.url)
 
     assert code == 200 and headers["Content-Type"].startswith("text/html")
-    assert "<p id=\"task\">Tick the box &amp; &lt;tap&gt; Done</p>" in body.decode()
+    assert "<p id=\"task-full\">Tick the box &amp; &lt;tap&gt; Done</p>" in body.decode()
     assert "default-src 'none'" in headers["Content-Security-Policy"]
     assert headers["Cache-Control"] == "no-store" and headers["Referrer-Policy"] == "no-referrer"
 
@@ -459,6 +526,19 @@ def test_keys_that_type_nothing_and_shortcuts_go_with_the_keys_held(page):
     assert downs == [("ArrowLeft", "ArrowLeft", "", 37, 8), ("a", "KeyA", "", 65, 2)]
 
 
+def test_a_key_pressed_times_over_goes_down_and_up_each_time(page):
+    """A phone's keyboard deletes the word autocorrect replaces with as many Backspaces at once."""
+    post_input(page, {"kind": "key", "key": "Backspace", "times": 3})
+
+    assert [e["eventType"] for e in sent_events(page, 6)] == ["keyDown", "keyUp"] * 3
+
+
+def test_a_key_is_pressed_at_most_so_many_times_at_once(tk):
+    events = tk.controls.events({"kind": "key", "key": "ArrowLeft", "times": 10_000}, None)
+
+    assert len(events) == 2 * tk.controls.MOST_PRESSES
+
+
 def test_every_key_event_carries_every_field_the_stream_server_needs(tk):
     """It drops a key event that lacks one (a Backspace without "text" never arrives)."""
     for event in tk.controls.events({"kind": "key", "key": "Backspace"}, None):
@@ -470,7 +550,8 @@ def test_every_key_event_carries_every_field_the_stream_server_needs(tk):
     {"kind": "press", "x": 0, "y": 0, "button": "back"}, {"kind": "press", "x": 0, "y": 0, "modifiers": 16},
     {"kind": "move", "x": 0, "y": 0, "button": "both"}, {"kind": "wheel", "x": 0, "y": 0},
     {"kind": "text", "text": ""}, {"kind": "text", "text": "x" * 1001}, {"kind": "key", "key": "F5"},
-    {"kind": "key", "key": "ab"}, {"kind": "key", "key": ["Enter"]}, {"kind": ["press"]}, ["press"]])
+    {"kind": "key", "key": "ab"}, {"kind": "key", "key": ["Enter"]}, {"kind": "key", "key": "Tab", "times": "two"},
+    {"kind": ["press"]}, ["press"]])
 def test_actions_the_browser_cant_take_get_400(page, action):
     page.stream.take(frame_message(jpeg(1280, 633)))
 
@@ -495,6 +576,37 @@ def test_a_fit_agent_browser_fails_is_logged_and_the_page_carries_on(page, capfd
     assert "couldn't fit the viewport" in capfd.readouterr().err
 
 
+def test_the_page_gets_the_text_fields_the_browser_has_in_view(page, tk):
+    page.session.found = found_on_the_page(focus=None)
+
+    code, headers, body = fetch(page.url + "fields")
+
+    assert (code, headers["Content-Type"]) == (200, "application/json")
+    assert json.loads(body) == {"fields": [{"x": 0.05, "y": 0.1, "width": 0.5, "height": 0.05, "keyboard": EMAIL_KEYBOARD}],
+                                "focus": None}
+    assert page.session.evals == [tk.fields.FIELDS_SCRIPT]
+
+
+@pytest.mark.parametrize("trouble", ["agent-browser", "answer"])
+def test_fields_the_browser_cant_say_get_502(page, trouble):
+    """The page asks again once the browser's page changes."""
+    if trouble == "agent-browser":
+        page.session.fail = "Execution context was destroyed"
+    else:
+        page.session.found = {"width": 1280, "height": 633, "fields": "nope", "focus": None}
+
+    assert fetch(page.url + "fields")[0] == 502
+
+
+def test_once_the_browser_has_closed_nothing_asks_agent_browser(page):
+    """Any agent-browser command for its session would start it again."""
+    page.stream.close()
+
+    assert fetch(page.url + "fields")[0] == 410
+    assert fetch(page.url + "screen", data={"width": 390, "height": 664})[0] == 410
+    assert page.session.evals == [] and page.session.set == []
+
+
 def test_done_and_i_cant_do_it_end_the_take_over_and_then_everything_answers_410(page):
     assert fetch(page.url + "end", data={"outcome": "finished"})[0] == 400
     assert fetch(page.url + "end", data={"outcome": "gave-up"})[0] == 204
@@ -504,6 +616,7 @@ def test_done_and_i_cant_do_it_end_the_take_over_and_then_everything_answers_410
     assert fetch(page.url + "frame?after=0")[0] == 410
     assert fetch(page.url + "input", data={"kind": "text", "text": "late"})[0] == 410
     assert fetch(page.url + "screen", data={"width": 390, "height": 664})[0] == 410
+    assert fetch(page.url + "fields")[0] == 410
 
 
 def test_a_page_that_goes_away_mid_answer_is_no_error(page, capfd):
@@ -644,7 +757,8 @@ def take_over(tk, seconds=30, then=None, session=None):
             then(notice.link, stream)
 
     threading.Thread(target=act, daemon=True).start()
-    browser = tk.run.Browser(stream, tk.viewport.Fitting(session or FakeSession(tk)))
+    session = session or FakeSession(tk)
+    browser = tk.run.Browser(stream, tk.viewport.Fitting(session), tk.fields.Fields(session))
     outcome = tk.run.TakeOver(browser, FakeTunnel(), notice, seconds).run("Tick the box")
     return outcome, notice, stream
 

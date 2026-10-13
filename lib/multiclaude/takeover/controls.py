@@ -11,9 +11,10 @@ field it expects, so every event carries all of them.
       a wheel or trackpad turn over the point
   {"kind": "text", "text": "Hello"}
       characters to type
-  {"kind": "key", "key": "ArrowLeft", "modifiers": 8}
+  {"kind": "key", "key": "ArrowLeft", "modifiers": 8, "times": 1}
       a key that types nothing (Enter types its return), pressed and let go, or a shortcut's
-      letter ({"key": "a", "modifiers": 2} is Control+A)
+      letter ({"key": "a", "modifiers": 2} is Control+A); times presses it over and over, as a
+      phone's keyboard does to delete a word autocorrect replaces
 
 The fields shown after the point are optional, with those defaults. Modifiers are the keys held,
 added up: Alt 1, Control 2, Meta 4, Shift 8."""
@@ -30,6 +31,7 @@ MOST_CLICKS = 3            # a triple click selects a paragraph
 MODIFIERS = range(16)      # every sum of Alt 1, Control 2, Meta 4 and Shift 8
 MOST_TURN = 10             # frames' worth of scrolling in one wheel turn
 TEXT_MAX = 1000            # characters in one action
+MOST_PRESSES = 100         # of a key in one action
 
 
 @dataclass(frozen=True)
@@ -53,7 +55,7 @@ def events(action, frame):
     if kind == "text":
         return typed(action.get("text"))
     if kind == "key":
-        return pressed_key(action.get("key")).events(modifiers(action))
+        return pressed_key(action.get("key")).events(modifiers(action)) * presses(action)
     pointing = {"press": press, "release": release, "move": move, "wheel": wheel}
     if not isinstance(kind, str) or kind not in pointing:  # a list or an object can't be looked up
         raise ValueError(f"no such action: {kind!r}")
@@ -122,6 +124,10 @@ def modifiers(action):
     if value not in MODIFIERS:
         raise ValueError(f"no such modifiers: {value!r}")
     return int(value)
+
+
+def presses(action):
+    return round(number(action, "times", 1, MOST_PRESSES, default=1))
 
 
 def typed(text):
