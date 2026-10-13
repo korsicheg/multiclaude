@@ -11,6 +11,7 @@ from multiclaude.log import log
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 TIMEOUT = 300
+SETTINGS_FILES = ("settings.json", "settings.local.json")  # in a folder's .claude: project, then local, which wins
 
 
 @dataclass
@@ -29,7 +30,7 @@ def env_for(cwd):
     settings (project, then local) give the sessions started there, such as a person's own
     GitHub login for cloning a private marketplace. Claude Code's subcommands don't apply it."""
     env = dict(os.environ)
-    for name in ("settings.json", "settings.local.json"):
+    for name in SETTINGS_FILES:
         try:
             extra = jsonfile.read_object(Path(cwd) / ".claude" / name).get("env")
         except jsonfile.NotAnObject:

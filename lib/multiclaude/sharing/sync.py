@@ -43,6 +43,11 @@ class Manifest:
         self.shared[kind].discard(item)
         self.save()
 
+    @property
+    def people(self):
+        """The names of the people who had what's shared, or None before any run noted them."""
+        return self.data.get("people")
+
     def save(self, **extra):
         self.data.update(extra)
         if not self.dry_run:
@@ -58,8 +63,8 @@ class Sync:
         self.known = self.user.get("extraKnownMarketplaces") or {}  # the marketplaces ~/.claude declares
         self.dedupe = set(self.manifest.shared["marketplaces"])      # marketplaces whose per-person copies go
         # People registered since the last run. Before any run noted who was here, nobody is new.
-        had = self.manifest.data.get("people")
-        self.newcomers = [p for p in self.people if had is not None and p.name not in had]
+        had = self.manifest.people
+        self.newcomers = [] if had is None else [p for p in self.people if p.name not in had]
         self.up, self.down = [], []
 
     def run(self):
@@ -73,7 +78,11 @@ class Sync:
         self.return_plugins()
         self.return_skills()
         self.return_marketplaces()
-        if self.note_people():
+        if self.still_returning():
+            self.log(f"{names(self.newcomers)} joined, but not everything shared could go back yet; "
+                     "sharing nothing new until it has")
+        else:
+            self.note_people()
             # 2. What everyone has moves up. Marketplaces are declared first, since a shared plugin
             # needs its marketplace at user scope; the per-person declarations go last, after the
             # plugins that came from them.
@@ -120,13 +129,13 @@ class Sync:
             if not self.dry_run:
                 shutil.rmtree(d, ignore_errors=True)
 
-    def why_back(self, off):
+    def why_back(self, off=()):
         """Why a shared item goes back to the people who had it, or None while it stays shared."""
         if self.newcomers:
             return f"{displays(self.newcomers)} joined"
         return f"{displays(off)} turned it off" if off else None
 
-    def keeping(self, off):
+    def keeping(self, off=()):
         """Who gets a shared item back in their own folder: everyone who had it and didn't turn it off."""
         return [p for p in self.people if p not in off and p not in self.newcomers]
 
@@ -177,32 +186,35 @@ class Sync:
         is shared any more: a shared plugin needs its marketplace at user scope."""
         if not self.newcomers:
             return
-        why, keep = self.why_back([]), self.keeping([])
+        why, keep = self.why_back(), self.keeping()
         for name in sorted(self.manifest.shared["marketplaces"]):
-            if any(pid.rpartition("@")[2] == name for pid in self.manifest.shared["plugins"]):
+            if any(marketplace_of(pid) == name for pid in self.manifest.shared["plugins"]):
                 continue
             self.log(f"marketplace {name}: {why}; moving it back to {names(keep) or 'nobody'}")
-            declared = (self.user.get("extraKnownMarketplaces") or {}).get(name)
-            if isinstance(declared, dict) and "source" in declared:
-                for p in keep:
-                    if p.ws.is_dir() and name not in p.marketplaces:
-                        self.edit(p.files["project"], set_key("extraKnownMarketplaces", name, {"source": declared["source"]}))
+            self.declare_marketplace(name, keep)
             self.edit(paths.USER_SETTINGS, drop_key("extraKnownMarketplaces", name))
             self.known = {k: v for k, v in self.known.items() if k != name}
             self.dedupe.discard(name)
             self.manifest.discard("marketplaces", name)
             self.down.append(f"marketplace {name} ({why})")
 
+    def declare_marketplace(self, name, people):
+        """Declare a shared marketplace in these people's own settings, with the source ~/.claude has for it."""
+        source = (self.known.get(name) or {}).get("source")
+        if source is None:
+            return
+        for p in people:
+            if p.ws.is_dir() and name not in p.marketplaces:
+                self.edit(p.files["project"], set_key("extraKnownMarketplaces", name, {"source": source}))
+
+    def still_returning(self):
+        """Whether someone joined but some of what was shared couldn't go back yet (an install
+        failed). The newcomers stay new until it has, so the next run tries again."""
+        return bool(self.newcomers) and any(self.manifest.shared.values())
+
     def note_people(self):
-        """Note who has what's shared, once everything a newcomer shouldn't get has gone back.
-        False while some of it is still shared (an install failed): nothing new is shared then,
-        and the next run tries again."""
-        if self.newcomers and any(self.manifest.shared.values()):
-            self.log(f"{names(self.newcomers)} joined, but not everything shared could go back yet; "
-                     "sharing nothing new until it has")
-            return False
+        """Note who has what's shared now, so the next run can tell who is new."""
         self.manifest.save(people=sorted(p.name for p in self.people))
-        return True
 
     def share_marketplaces(self):
         for name, source in sorted(everyone_has(self.people, lambda p: p.marketplaces).items()):
@@ -227,7 +239,7 @@ class Sync:
         for pid in sorted(everyone_has(self.people, lambda p: {k: True for k in p.enabled_plugins})):
             if ("plugins", pid) in self.manifest or pid in NEVER_SHARE:
                 continue
-            market = pid.rpartition("@")[2]
+            market = marketplace_of(pid)
             if market not in self.known and market not in BUILTIN_MARKETPLACES:
                 self.log(f"plugin {pid}: everyone has it, but marketplace {market} isn't shared yet")
                 continue
@@ -362,6 +374,11 @@ def set_key(section, key, value):
     def change(data):
         data.setdefault(section, {})[key] = value
     return change
+
+
+def marketplace_of(pid):
+    """The marketplace part of a plugin id, plugin@marketplace."""
+    return pid.rpartition("@")[2]
 
 
 def names(people):

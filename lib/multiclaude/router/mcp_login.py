@@ -61,13 +61,12 @@ class McpLogin:
 
     def start(self):
         self.master, slave = pty.openpty()
+        ws = paths.workspace(self.user.name)
         try:
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", *TERMINAL_SIZE, 0, 0))
-            self.proc = subprocess.Popen([paths.CLAUDE, "mcp", "login", self.server, "--no-browser"],
-                                         cwd=paths.workspace(self.user.name),
+            self.proc = subprocess.Popen([paths.CLAUDE, "mcp", "login", self.server, "--no-browser"], cwd=ws,
                                          stdin=slave, stdout=slave, stderr=slave,
-                                         env={**claude_cli.env_for(paths.workspace(self.user.name)),
-                                              "TERM": "dumb", "NO_COLOR": "1"},
+                                         env={**claude_cli.env_for(ws), "TERM": "dumb", "NO_COLOR": "1"},
                                          start_new_session=True)
         except OSError:
             os.close(self.master)
