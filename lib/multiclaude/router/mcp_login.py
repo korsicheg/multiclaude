@@ -12,7 +12,7 @@ import subprocess
 import termios
 import time
 
-from multiclaude import bot, paths
+from multiclaude import bot, claude_cli, paths
 from multiclaude.log import log
 from multiclaude.router.inbound import REDIRECT_RE
 from multiclaude.router.work import SessionCommands
@@ -66,7 +66,9 @@ class McpLogin:
             self.proc = subprocess.Popen([paths.CLAUDE, "mcp", "login", self.server, "--no-browser"],
                                          cwd=paths.workspace(self.user.name),
                                          stdin=slave, stdout=slave, stderr=slave,
-                                         env={**os.environ, "TERM": "dumb", "NO_COLOR": "1"}, start_new_session=True)
+                                         env={**claude_cli.env_for(paths.workspace(self.user.name)),
+                                              "TERM": "dumb", "NO_COLOR": "1"},
+                                         start_new_session=True)
         except OSError:
             os.close(self.master)
             raise

@@ -116,6 +116,24 @@ def test_claude_outcome_prefers_the_json_line(lib):
     assert outcome([], 3) == (False, "exit 3", {})
 
 
+def test_claude_runs_with_the_env_its_folders_settings_give_sessions(lib, tmp_path, monkeypatch):
+    from multiclaude import claude_cli
+    ws = tmp_path / "ws"
+    (ws / ".claude").mkdir(parents=True)
+    (ws / ".claude" / "settings.json").write_text(json.dumps({"env": {"MC_LOGIN": "/mine", "MC_SCOPE": "project"}}))
+    (ws / ".claude" / "settings.local.json").write_text(json.dumps({"env": {"MC_SCOPE": "local"}}))
+    fake = tmp_path / "claude"
+    fake.write_text('#!/bin/sh\necho "$MC_LOGIN $MC_SCOPE $MC_KEPT"\n')
+    fake.chmod(0o755)
+    monkeypatch.setattr(claude_cli.paths, "CLAUDE", str(fake))
+    monkeypatch.setenv("MC_KEPT", "kept")
+
+    assert claude_cli.run(["plugin", "list"], ws).lines == ["/mine local kept"]
+    (ws / ".claude" / "settings.local.json").write_text("{oops")  # a broken file adds nothing
+    assert claude_cli.env_for(ws)["MC_SCOPE"] == "project"
+    assert "MC_LOGIN" not in claude_cli.env_for(tmp_path)
+
+
 def test_users(lib):
     from multiclaude import jsonfile, paths, users
     jsonfile.write_json(paths.USERS, {"b": {"telegram_id": 2, "display": "Bee"}, "a": {"telegram_id": "1", "role": "owner"}})

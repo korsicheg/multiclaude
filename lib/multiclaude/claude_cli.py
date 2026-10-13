@@ -1,10 +1,12 @@
 """Running the `claude` command line (plugin, marketplace and mcp subcommands)."""
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from multiclaude import paths
+from multiclaude import jsonfile, paths
 from multiclaude.log import log
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -22,10 +24,25 @@ class CliResult:
     data: dict = field(default_factory=dict)  # claude's --json outcome, when it printed one
 
 
+def env_for(cwd):
+    """The environment for `claude` run in cwd: this process's, plus the `env` that cwd's own
+    settings (project, then local) give the sessions started there, such as a person's own
+    GitHub login for cloning a private marketplace. Claude Code's subcommands don't apply it."""
+    env = dict(os.environ)
+    for name in ("settings.json", "settings.local.json"):
+        try:
+            extra = jsonfile.read_object(Path(cwd) / ".claude" / name).get("env")
+        except jsonfile.NotAnObject:
+            continue
+        if isinstance(extra, dict):
+            env.update({str(k): str(v) for k, v in extra.items()})
+    return env
+
+
 def run(args, cwd, timeout=TIMEOUT):
-    """Run `claude <args>` in cwd. Never raises: a failure to run is a failed CliResult."""
+    """Run `claude <args>` in cwd, with env_for(cwd). Never raises: a failure to run is a failed CliResult."""
     try:
-        r = subprocess.run([paths.CLAUDE, *args], cwd=cwd, stdin=subprocess.DEVNULL,
+        r = subprocess.run([paths.CLAUDE, *args], cwd=cwd, stdin=subprocess.DEVNULL, env=env_for(cwd),
                            capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as e:
         log(f"{cwd}: claude {' '.join(args)}: {e}")
