@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+"""takeover: hand an assistant's agent-browser session to its person for something only they can
+do (a CAPTCHA, a press-and-hold check, a payment confirmation, a consent screen). They get a
+private link on Telegram, see the browser live on their phone, tap and type into it, and tap Done.
+It blocks until then, so assistants run it in the background (lib/multiclaude/takeover).
+
+  takeover --session NAME [--for TEXT] [--minutes N] [--home DIR] [--chat ID] [--print-link]
+
+Exit status: 0 Done, 3 I can't do it, 4 the time ran out, 1 failed or the browser closed.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+from multiclaude.takeover import run  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(run.main(sys.argv[1:]))

@@ -31,6 +31,8 @@ RELOAD_REQUESTS = STATE / "reload-requests"
 SETTINGS_LOCK = STATE / "shared.lock"
 # What each scheduled job run did, <name>.jsonl, written by `assistant job` (jobruns.py).
 JOB_RUNS = STATE / "job-runs"
+# A lock per browser being taken over, <its stream port>.lock: one take-over of a browser at a time.
+TAKEOVERS = STATE / "takeovers"
 
 PROJECTS = CLAUDE_DIR / "projects"
 USER_SETTINGS = CLAUDE_DIR / "settings.json"

@@ -125,6 +125,19 @@ MCP servers are never shared: a server often carries a login, and each person co
 - A server that runs on this machine and keeps its own login in a file (a token cache in `~/.something`) would share it with anyone else running the same program. Point it at a folder inside `~/workspaces/<name>` with its env var or flag.
 - Your running session loads a server added on the command line only after `/reload-plugins` and `/mcp reconnect <server>`, which you can't type into yourself. Ask your person to send `/mcp reconnect <server>`, or it loads when your session next restarts. For servers that need a browser sign-in, your person sends `/mcp login <server>`.
 
+## Browser take-overs
+
+When your browser (agent-browser) hits something only your person can do, such as a CAPTCHA, a "press and hold" check, a 3-D Secure payment confirmation or a consent screen, hand them that browser rather than giving up or trying to get around it:
+
+    takeover --session <session> --for "Solve the CAPTCHA, then tap Done."
+
+- It sends your person a Telegram message with your `--for` text (Markdown: what they'll see and what to do there) and an **Open the browser** button, so don't send the link yourself. The page shows that browser live: they tap, hold, drag, type and scroll in it, then tap **Done** or **I can't do it**.
+- It blocks until they're finished or the link expires (`--minutes`, 15 by default, at most 60). Run it as a background Bash command and keep answering your person; you're told when it exits. The line it prints and its exit status say how it ended: 0 Done, 3 I can't do it, 4 the time ran out, 1 for the rest (the browser closed, it was stopped, or it failed, with the reason on stderr). It edits its message to say so too.
+- Leave the browser alone while your person has it. After Done, look at the page again (a snapshot or screenshot) before you carry on, since they may have got only part of the way. After I can't do it or an expiry, ask your person how to go on rather than starting another take-over.
+- If your person no longer needs it, stop the background task: the link stops working and the message says so.
+- `--session` is the session you browse with (`agent-browser --session NAME`). A plugin's MCP server may run its browser with a HOME of its own, and its sessions then don't show in your `agent-browser session list`: pass that HOME (the folder holding its `.agent-browser/`) with `--home`.
+- Whoever has the link sees and controls that browser, payment pages and signed-in accounts included. It goes only to your person's own Telegram chat and stops working when the take-over ends. Never pass it on, and keep `--print-link`, which prints it instead, for trying a take-over out on the machine. One browser has one take-over at a time.
+
 ## Remembering your person
 
 Save durable facts in your memory so they survive restarts: your person's preferences, timezone, recurring people and projects, and how they like things done. Update an existing memory instead of adding a duplicate. Your memory belongs to your folder; other people's assistants don't see it. Keep the personal `CLAUDE.md` in your folder short: who your person is and the few things every session must know about them. This file holds how assistants work.

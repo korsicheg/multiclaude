@@ -36,8 +36,9 @@ class Home:
         (self.home / ".local").mkdir()
         os.symlink(self.fake.bin, self.home / ".local" / "bin")
         # Record what they're asked; systemctl shows self.execstart. bun and tmux are there for
-        # `assistant install`'s check, uv so it isn't installed, and crontab so the real one is never touched.
-        for program in ("systemctl", "sudo", "crontab", "bun", "tmux", "uv"):
+        # `assistant install`'s check, uv and cloudflared so they aren't installed, and crontab so the
+        # real one is never touched.
+        for program in ("systemctl", "sudo", "crontab", "bun", "tmux", "uv", "cloudflared"):
             fake = self.fake.bin / program
             fake.write_text(SYSTEM_FAKE.replace("PROGRAM", program))
             fake.chmod(0o755)
@@ -393,6 +394,8 @@ def test_install_sets_the_machine_up_for_the_user_running_it(home):
     calls = home.system_calls()
     assert "sudo tee /etc/systemd/system/assistant-watcher.service" in calls and "crontab -" in calls
     assert ["plugin", "install", "telegram@claude-plugins-official", "--scope", "project"] in home.fake.argvs()
+    linked = home.home / ".local" / "bin"
+    assert all((linked / command).resolve() == home.root / "bin" / command for command in ("assistant", "tg", "takeover"))
 
 
 def test_install_schedules_the_shared_sync_on_a_machine_with_no_crontab_yet(kept_crontab):

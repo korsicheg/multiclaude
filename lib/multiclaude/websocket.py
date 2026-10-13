@@ -1,6 +1,6 @@
-"""A small WebSocket client (RFC 6455) on the standard library, enough for the relay: text
-messages, pings and close. The bot's Python runs with no dependencies, so this stands in for a
-library."""
+"""A small WebSocket client (RFC 6455) on the standard library, enough for the relay and for a
+browser's stream server: text messages, pings and close. The bot's Python runs with no
+dependencies, so this stands in for a library."""
 import base64
 import hashlib
 import os
@@ -28,14 +28,17 @@ class WebSocket:
 
     @classmethod
     def connect(cls, url, headers=(), timeout=15):
-        """headers: extra (name, value) pairs for the handshake, such as Authorization."""
+        """A wss:// URL, or ws:// for a server on this machine. headers: extra (name, value) pairs
+        for the handshake, such as Authorization."""
         parts = urlsplit(url)
-        raw = socket.create_connection((parts.hostname, parts.port or 443), timeout)
-        sock = ssl.create_default_context().wrap_socket(raw, server_hostname=parts.hostname)
+        secure = parts.scheme == "wss"
+        sock = socket.create_connection((parts.hostname, parts.port or (443 if secure else 80)), timeout)
+        if secure:
+            sock = ssl.create_default_context().wrap_socket(sock, server_hostname=parts.hostname)
         key = base64.b64encode(os.urandom(16)).decode()
         target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
         extra = "".join(f"{name}: {value}\r\n" for name, value in headers)
-        sock.sendall((f"GET {target} HTTP/1.1\r\nHost: {parts.hostname}\r\nUpgrade: websocket\r\n"
+        sock.sendall((f"GET {target} HTTP/1.1\r\nHost: {parts.netloc}\r\nUpgrade: websocket\r\n"
                       f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
                       f"{extra}\r\n").encode())
         ws = cls(sock)

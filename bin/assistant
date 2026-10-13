@@ -61,14 +61,15 @@ render_claude_md() {
 }
 
 # Set this machine up for the user running it: the commands on the PATH, Claude Code's managed
-# settings, the status line, the assistants' rules, the Telegram plugin, the services and the
-# shared-sync cron line. Safe to run again, after an update say.
+# settings, uv and cloudflared, the status line, the assistants' rules, the Telegram plugin, the
+# services and the shared-sync cron line. Safe to run again, after an update say.
 cmd_install() {
   check_programs
   mkdir -p "$HOME/.local/bin" "$HOME/workspaces" "$ROOT/logs"
-  ln -sf "$ROOT/bin/assistant" "$ROOT/bin/tg" "$ROOT/system/claude-usage" "$HOME/.local/bin/"
+  ln -sf "$ROOT/bin/assistant" "$ROOT/bin/tg" "$ROOT/bin/takeover" "$ROOT/system/claude-usage" "$HOME/.local/bin/"
   install_managed_settings
   install_uv
+  install_cloudflared
   install_statusline
   install_rules
   install_telegram_plugin
@@ -103,6 +104,25 @@ install_managed_settings() {
 install_uv() {
   command -v uv >/dev/null && return
   curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh >/dev/null || die "installing uv failed"
+}
+
+# Browser take-overs (bin/takeover) reach the person's phone through a Cloudflare quick tunnel.
+# cloudflared comes from Cloudflare's own apt repository, so apt upgrades keep it current:
+# Cloudflare stops serving versions over a year old.
+install_cloudflared() {
+  local keyring=/usr/share/keyrings/cloudflare-main.gpg
+  command -v cloudflared >/dev/null && return
+  if ! command -v apt-get >/dev/null; then
+    echo "Install cloudflared yourself for browser take-overs (README, Requirements)." >&2
+    return
+  fi
+  { sudo mkdir -p --mode=0755 "${keyring%/*}" &&
+    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee "$keyring" >/dev/null &&
+    echo "deb [signed-by=$keyring] https://pkg.cloudflare.com/cloudflared any main" |
+      sudo tee /etc/apt/sources.list.d/cloudflared.list >/dev/null &&
+    sudo apt-get update -qq &&
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cloudflared >/dev/null; } ||
+    die "installing cloudflared failed"
 }
 
 install_statusline() {

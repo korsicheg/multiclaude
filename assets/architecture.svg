@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1510" height="800" viewBox="0 0 1510 800" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1510" height="910" viewBox="0 0 1510 910" role="img" aria-labelledby="title desc">
   <title id="title">How multiclaude works</title>
-  <desc id="desc">A Telegram message reaches the front desk, a Claude Code session that hosts the Telegram plugin; the router reads it there and types it into the sender's own Claude Code assistant, which replies with tg through Telegram's Bot API. The control panel, and the optional Slack and Siri add-ins, reach the router through the relay, a Cloudflare Worker.</desc>
+  <desc id="desc">A Telegram message reaches the front desk, a Claude Code session that hosts the Telegram plugin; the router reads it there and types it into the sender's own Claude Code assistant, which replies with tg through Telegram's Bot API. The control panel, and the optional Slack and Siri add-ins, reach the router through the relay, a Cloudflare Worker. When a browser needs the person, an assistant runs takeover, which shows them that browser live through a Cloudflare quick tunnel until they tap Done.</desc>
   <!-- The architecture at a glance, kept current with ARCHITECTURE.md. Three columns: the phone, the internet, the machine.
        Solid arrows carry messages in, dashed ones replies out, dotted ones the add-ins' paths; dashed boxes are add-ins.
        Numbered badges follow one Telegram message. The card has its own white background, so it reads the same on light
@@ -47,16 +47,16 @@
     </style>
   </defs>
 
-  <rect width="1510" height="800" rx="16" fill="#ffffff"/>
+  <rect width="1510" height="910" rx="16" fill="#ffffff"/>
   <text class="title" x="30" y="44">How multiclaude works</text>
   <text class="subtitle" x="30" y="70">One Telegram bot, with a personal Claude Code assistant for each person, on one Linux machine. Follow 1 to 7 to see a message go there and back.</text>
 
   <!-- Columns -->
-  <rect class="band" x="20" y="118" width="270" height="562" rx="14"/>
+  <rect class="band" x="20" y="118" width="270" height="672" rx="14"/>
   <text class="band-label" x="36" y="142">ON EACH PERSON'S PHONE</text>
-  <rect class="band" x="320" y="118" width="290" height="562" rx="14"/>
+  <rect class="band" x="320" y="118" width="290" height="672" rx="14"/>
   <text class="band-label" x="336" y="142">ON THE INTERNET</text>
-  <rect class="band" x="640" y="118" width="840" height="562" rx="14"/>
+  <rect class="band" x="640" y="118" width="840" height="672" rx="14"/>
   <text class="band-label" x="656" y="142">ON THE LINUX MACHINE · RUNNING AROUND THE CLOCK</text>
   <rect class="group" x="1040" y="290" width="250" height="265" rx="12"/>
   <text class="band-label" x="1054" y="309">ONE ASSISTANT PER PERSON</text>
@@ -228,31 +228,66 @@
   <text class="label middle faint" x="315" y="603">servers</text>
 
   <path class="opt" d="M1305,510 H1328" marker-end="url(#opt)"/>
-  <path class="opt" d="M1460,510 H1495 V712 H150 V622" marker-end="url(#opt)"/>
-  <text class="label middle faint" x="820" y="716">slack sends replies to Slack DMs through Slack's servers</text>
+  <path class="opt" d="M1460,510 H1495 V822 H30 V585 H38" marker-end="url(#opt)"/>
+  <text class="label middle faint" x="820" y="826">slack sends replies to Slack DMs through Slack's servers</text>
 
   <path class="tie" d="M1165,260 V290"/>
 
-  <!-- How to read it -->
-  <path class="in" d="M30,748 H76" marker-end="url(#in)"/>
-  <text class="legend" x="86" y="752">a message on its way in</text>
-  <path class="out" d="M250,748 H296" marker-end="url(#out)"/>
-  <text class="legend" x="306" y="752">a reply on its way out</text>
-  <path class="opt" d="M460,748 H506" marker-end="url(#opt)"/>
-  <text class="legend" x="516" y="752">an add-in's path</text>
-  <g class="step"><circle cx="650" cy="748" r="9"/><text x="650" y="752">1</text></g>
-  <text class="legend" x="665" y="752">one Telegram message, step by step</text>
+  <!-- A browser take-over: the person's phone, the quick tunnel, takeover and the assistant's browser -->
+  <g class="box">
+    <rect class="app" x="40" y="702" width="220" height="72" rx="10"/>
+    <text class="name" x="150" y="726">Browser take-over</text>
+    <text x="150" y="746">the browser, live: tap and</text>
+    <text x="150" y="763">type into it, then tap Done</text>
+  </g>
+  <g class="box">
+    <rect class="cloud" x="370" y="702" width="220" height="72" rx="10"/>
+    <text class="name" x="480" y="726">Quick tunnel</text>
+    <text x="480" y="746">a Cloudflare address for one</text>
+    <text x="480" y="763">take-over, with no account</text>
+  </g>
+  <g class="box">
+    <rect class="program" x="700" y="702" width="240" height="72" rx="10"/>
+    <text class="name" x="820" y="726">takeover</text>
+    <text x="820" y="746">an assistant runs it: serves the</text>
+    <text x="820" y="763">page, sends you the link</text>
+  </g>
+  <g class="box">
+    <rect class="program" x="1060" y="702" width="210" height="72" rx="10"/>
+    <text class="name" x="1165" y="726">The assistant's browser</text>
+    <text x="1165" y="746">agent-browser's Chrome,</text>
+    <text x="1165" y="763">streaming what it shows</text>
+  </g>
+  <path class="in" d="M262,738 H368" marker-start="url(#in)" marker-end="url(#in)"/>
+  <text class="label middle" x="315" y="729">frames and taps</text>
+  <text class="label middle" x="315" y="757">over HTTPS</text>
+  <path class="in" d="M592,738 H698" marker-start="url(#in)" marker-end="url(#in)"/>
+  <text class="label middle" x="645" y="729">only while</text>
+  <text class="label middle" x="645" y="757">it lasts</text>
+  <path class="in" d="M942,738 H1058" marker-start="url(#in)" marker-end="url(#in)"/>
+  <text class="label middle" x="1000" y="729">its stream,</text>
+  <text class="label middle" x="1000" y="757">a WebSocket</text>
 
-  <rect class="app" x="30" y="771" width="16" height="12" rx="3"/>
-  <text class="legend" x="54" y="781">an app on the phone</text>
-  <rect class="cloud" x="200" y="771" width="16" height="12" rx="3"/>
-  <text class="legend" x="224" y="781">a service on the internet</text>
-  <rect class="program" x="400" y="771" width="16" height="12" rx="3"/>
-  <text class="legend" x="424" y="781">a program on the machine</text>
-  <rect class="claude" x="610" y="771" width="16" height="12" rx="3"/>
-  <text class="legend" x="634" y="781">a Claude Code session</text>
-  <rect class="shared" x="800" y="771" width="16" height="12" rx="3"/>
-  <text class="legend" x="824" y="781">files every assistant shares</text>
-  <rect class="addin" x="1010" y="771" width="16" height="12" rx="3"/>
-  <text class="legend" x="1034" y="781">an add-in, off until the owner turns it on</text>
+  <!-- How to read it -->
+  <path class="in" d="M30,858 H76" marker-end="url(#in)"/>
+  <text class="legend" x="86" y="862">a message on its way in</text>
+  <path class="out" d="M250,858 H296" marker-end="url(#out)"/>
+  <text class="legend" x="306" y="862">a reply on its way out</text>
+  <path class="opt" d="M460,858 H506" marker-end="url(#opt)"/>
+  <text class="legend" x="516" y="862">an add-in's path</text>
+  <g class="step"><circle cx="650" cy="858" r="9"/><text x="650" y="862">1</text></g>
+  <text class="legend" x="665" y="862">one Telegram message, step by step</text>
+
+  <rect class="app" x="30" y="881" width="16" height="12" rx="3"/>
+  <text class="legend" x="54" y="891">an app on the phone</text>
+  <rect class="cloud" x="200" y="881" width="16" height="12" rx="3"/>
+  <text class="legend" x="224" y="891">a service on the internet</text>
+  <rect class="program" x="400" y="881" width="16" height="12" rx="3"/>
+  <text class="legend" x="424" y="891">a program on the machine</text>
+  <rect class="claude" x="610" y="881" width="16" height="12" rx="3"/>
+  <text class="legend" x="634" y="891">a Claude Code session</text>
+  <rect class="shared" x="800" y="881" width="16" height="12" rx="3"/>
+  <text class="legend" x="824" y="891">files every assistant shares</text>
+  <rect class="addin" x="1010" y="881" width="16" height="12" rx="3"/>
+  <text class="legend" x="1034" y="891">an add-in, off until the owner turns it on</text>
 </svg>

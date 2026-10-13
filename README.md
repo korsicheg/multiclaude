@@ -4,7 +4,7 @@ One Telegram bot that gives each person their own Claude Code assistant, all on 
 
 Each person gets their own Claude Code session, folder (`~/workspaces/<name>`), `CLAUDE.md`, memory and chat history. They talk to it in a Telegram DM. It works on the machine as a full admin: it runs commands, edits files, schedules cron jobs, and replies with text, files and buttons. A control panel in Telegram shows each person their usage and lets them change their settings with a tap. Add-ins, off by default, bring more: Slack, Siri, voice notes and others.
 
-![How multiclaude works: a Telegram message reaches the front desk, a Claude Code session that hosts the Telegram plugin; the router reads it there and types it into the sender's own Claude Code assistant, which replies with tg through Telegram's Bot API. The control panel and the optional Slack and Siri add-ins reach the router through the relay, a Cloudflare Worker.](assets/architecture.svg)
+![How multiclaude works: a Telegram message reaches the front desk, a Claude Code session that hosts the Telegram plugin; the router reads it there and types it into the sender's own Claude Code assistant, which replies with tg through Telegram's Bot API. The control panel and the optional Slack and Siri add-ins reach the router through the relay, a Cloudflare Worker. When a browser needs the person, an assistant runs takeover, which shows them that browser live through a Cloudflare quick tunnel until they tap Done.](assets/architecture.svg)
 
 ## How it fits together
 
@@ -13,6 +13,7 @@ Each person gets their own Claude Code session, folder (`~/workspaces/<name>`), 
 - **Assistants:** one tmux session per person (`u-<name>`), started by `bin/run-user.sh`, in that person's folder. Each replies through `bin/tg`, which calls the Telegram Bot API.
 - **Scheduled jobs:** cron lines the assistants write, each running `assistant job`: a one-shot Claude in a person's folder whose answer is sent to them.
 - **Shared plugins and skills:** each person installs their own; `assistant shared sync` moves what everyone has into `~/.claude`, so there's one copy to keep up to date.
+- **Browser take-overs:** when an assistant's browser hits something only its person can do (a CAPTCHA, a payment confirmation), `bin/takeover` sends them a private link to that browser, live, through a Cloudflare quick tunnel. They tap and type into it on their phone, tap Done, and the assistant carries on.
 - **Relay and control panel** (optional): a Cloudflare Worker in `relay/` that serves the control panel, a Telegram Mini App, and holds its taps until the router collects them. Add-ins that bring other apps (Slack, Siri) come in through it too.
 
 The details, and the reasons behind them, are in [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -39,7 +40,7 @@ Add-ins are in the repo but off until the owner turns them on. The core works fu
 - Any Linux machine with systemd, and a user with passwordless sudo. The bot and every person's assistant run as that user, with full admin rights, so add only people you would trust with the machine.
 - The machine's timezone set to UTC (`sudo timedatectl set-timezone UTC`): cron runs in it, and the bot reads cron times as UTC.
 - [Claude Code](https://code.claude.com), with its first-run onboarding done (run `claude` once by hand). The sessions use either Claude Code's own login (a Claude Pro or Max plan: run `claude`, then `/login`) or an Anthropic API key.
-- [Bun](https://bun.sh) (the Telegram plugin runs on it), plus `tmux`, `jq`, `curl` 8.3+, `git`, `openssl` and Python 3.10+. `assistant install` adds [uv](https://docs.astral.sh/uv/) if it's missing.
+- [Bun](https://bun.sh) (the Telegram plugin runs on it), plus `tmux`, `jq`, `curl` 8.3+, `git`, `openssl` and Python 3.10+. `assistant install` adds [uv](https://docs.astral.sh/uv/) and [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) if they're missing (cloudflared from Cloudflare's apt repository; elsewhere than Debian or Ubuntu, install it yourself).
 - A Telegram bot token. Message [@BotFather](https://t.me/BotFather), send `/newbot`, pick a name and a username ending in `bot`, and copy the token.
 - For the control panel: a free Cloudflare account, and Node.js 22+ (`npx` runs `wrangler` to deploy the relay). Everything else works without it.
 - For development: Node.js and `shellcheck`, which `./check` uses with uv.
@@ -61,7 +62,7 @@ echo "$USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/90-$USER
 
 If the upgrade brought a new kernel ("System restart required"), `sudo reboot` and log in again.
 
-**2. Swap and a firewall.** Long-running Claude Code sessions can grow in memory, and swap keeps one spike from taking the machine down. The bot needs no open ports: the router only connects out, to Telegram and the relay.
+**2. Swap and a firewall.** Long-running Claude Code sessions can grow in memory, and swap keeps one spike from taking the machine down. The bot needs no open ports: the router only connects out, to Telegram and the relay, and so does a browser take-over's tunnel.
 
 ```sh
 if ! swapon --show | grep -q .; then
@@ -71,7 +72,7 @@ fi
 sudo ufw allow OpenSSH && sudo ufw --force enable
 ```
 
-**3. Bun and Claude Code.** `assistant install` adds uv itself.
+**3. Bun and Claude Code.** `assistant install` adds uv and cloudflared itself.
 
 ```sh
 curl -fsSL https://bun.sh/install | bash
@@ -114,10 +115,11 @@ git clone https://github.com/korsicheg/multiclaude ~/assistant
 ~/assistant/bin/assistant install
 ```
 
-It links `assistant`, `tg` and `claude-usage` into `~/.local/bin` (make sure that is on your `PATH`), and then:
+It links `assistant`, `tg`, `takeover` and `claude-usage` into `~/.local/bin` (make sure that is on your `PATH`), and then:
 
 - adds three Claude Code managed settings in `/etc/claude-code/managed-settings.json`: `channelsEnabled`, so the front desk can use `--channels`; `skipDangerousModePermissionPrompt`, so the bypass-permissions warning doesn't hold up sessions nobody watches; and `cleanupPeriodDays`, which keeps the transcripts that `--continue` and the router read.
 - installs [uv](https://docs.astral.sh/uv/) into `~/.local/bin` if it's missing: plugins' MCP servers and the voice-notes add-in run with `uv` and `uvx`.
+- installs `cloudflared` from Cloudflare's apt repository if it's missing, so `apt upgrade` keeps it current: browser take-overs reach the phone through its quick tunnels.
 - sets up the status line, which saves the snapshot `/usage`, `/model` and `/effort` read.
 - writes the assistants' rules to `~/workspaces/.claude/CLAUDE.md`, from `system/workspaces-CLAUDE.md` and the rules of each add-in that is on. Claude Code loads a parent folder's `.claude/CLAUDE.md`, so every assistant reads it, and the front desk never does.
 - installs the Telegram plugin for the repo's folder only (its `.claude/settings.json` enables it there).
@@ -237,6 +239,18 @@ The router also:
 - keeps Claude Code current: it runs `claude update` every half hour and restarts each session still on an older version once it has been idle for 5 minutes, conversation included. The owner gets one message per update.
 
 Button taps, what a reply quotes, formatted messages and a paired person's `/help` reach the router through a small patch to the Telegram plugin (`bin/patch-telegram-plugin`), which the front desk reapplies before every start, so plugin updates keep it. The same patch keeps the bot's Telegram connection with the front desk: another session that starts the plugin, such as a `claude mcp list` in `~/assistant`, gets its tools but doesn't poll.
+
+## Browser take-overs
+
+The assistants browse with [agent-browser](https://github.com/vercel-labs/agent-browser), which they or their plugins install. When its browser hits something only the person can do, such as a CAPTCHA, a "press and hold" check, a 3-D Secure payment confirmation or a consent screen, the assistant runs:
+
+```sh
+takeover --session <agent-browser session> --for "Solve the CAPTCHA, then tap Done"
+```
+
+The person gets a Telegram message with what to do and an **Open the browser** button. The page shows that browser live; they tap, hold or drag in it with one finger, pinch with two to zoom, type with the text field and the Enter, Delete and Tab buttons, scroll, and tap **Done** (or **I can't do it**). The command waits until then, or until the link expires (`--minutes`, 15 by default, at most 60), edits the message to say how it ended, and exits: 0 for Done, 3 for I can't do it, 4 when the time ran out, 1 for anything else. The assistants run it in the background and carry on when it ends.
+
+It needs `cloudflared`, which `assistant install` adds, and no Cloudflare account: each take-over opens a [quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/), a random `trycloudflare.com` address that lasts only while it runs. The page shows whatever that browser shows, payment pages included, so every address is under a long random token, the page is only served over HTTPS, nothing about it is logged, and one browser is taken over by one person at a time. To try it on the machine without Telegram, `--print-link` prints the link instead of sending it. `--home` finds a session a plugin runs with its own `HOME`.
 
 ## Day to day
 

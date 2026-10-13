@@ -4,8 +4,8 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 130
-include = ["bin/*.py", "bin/tg", "bin/patch-telegram-plugin", "lib/**/*.py", "addons/*/*.py", "addons/slack/slack",
-           "addons/siri/assistant-voice", "tests/*.py", "tests/addons/*.py"]
+include = ["bin/*.py", "bin/tg", "bin/takeover", "bin/patch-telegram-plugin", "lib/**/*.py", "addons/*/*.py",
+           "addons/slack/slack", "addons/siri/assistant-voice", "tests/*.py", "tests/addons/*.py"]
 
 [tool.ruff.lint]
 select = ["F", "E9"]
