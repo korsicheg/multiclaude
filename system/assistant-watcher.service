@@ -7,6 +7,8 @@ PartOf=assistant.service
 Type=simple
 User={{USER}}
 Environment=HOME={{HOME}}
+# As bin/common.sh: the claude commands it runs start MCP servers from these (uv, uvx, bun).
+Environment=PATH={{HOME}}/.local/bin:{{HOME}}/.bun/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory={{ROOT}}
 ExecStart={{PYTHON}} -I {{ROOT}}/bin/watcher.py
 Restart=always

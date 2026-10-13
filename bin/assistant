@@ -66,6 +66,7 @@ cmd_install() {
   mkdir -p "$HOME/.local/bin" "$HOME/workspaces" "$ROOT/logs"
   ln -sf "$ROOT/bin/assistant" "$ROOT/bin/tg" "$ROOT/system/claude-usage" "$HOME/.local/bin/"
   install_managed_settings
+  install_uv
   install_statusline
   install_rules
   install_telegram_plugin
@@ -95,6 +96,13 @@ install_managed_settings() {
 }
 
 # /usage, /model and /effort read the snapshot the status line saves for each session.
+# Plugins' MCP servers and the voice-notes add-in run with uv and uvx; the official installer
+# puts both in ~/.local/bin, first on the PATH of everything here (common.sh, the router's unit).
+install_uv() {
+  command -v uv >/dev/null && return
+  curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh >/dev/null || die "installing uv failed"
+}
+
 install_statusline() {
   local settings="$HOME/.claude/settings.json"
   mkdir -p "$HOME/.claude"

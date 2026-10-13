@@ -34,8 +34,8 @@ class Home:
         (self.home / ".local").mkdir()
         os.symlink(self.fake.bin, self.home / ".local" / "bin")
         # Record what they're asked; systemctl shows self.execstart. bun and tmux are there for
-        # `assistant install`'s check, and crontab so the real one is never touched.
-        for program in ("systemctl", "sudo", "crontab", "bun", "tmux"):
+        # `assistant install`'s check, uv so it isn't installed, and crontab so the real one is never touched.
+        for program in ("systemctl", "sudo", "crontab", "bun", "tmux", "uv"):
             fake = self.fake.bin / program
             fake.write_text(SYSTEM_FAKE.replace("PROGRAM", program))
             fake.chmod(0o755)
@@ -81,7 +81,10 @@ OWN_SETTINGS = ("TELEGRAM_STATE_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL")
 SYSTEM_FAKE = """#!/bin/sh
 echo "PROGRAM $*" >> "$FAKE_CLAUDE_DIR/system.log"
 [ "PROGRAM $1" = "systemctl show" ] && cat "$FAKE_CLAUDE_DIR/execstart" 2>/dev/null
-case "PROGRAM $1" in "sudo tee"|"crontab -") cat >/dev/null ;; esac  # they read what they're given
+case "PROGRAM $1" in  # they read what they're given; sudo tee keeps it, as the file's name
+  "sudo tee") cat > "$FAKE_CLAUDE_DIR/$(basename "$2")" ;;
+  "crontab -") cat >/dev/null ;;
+esac
 exit 0
 """
 
@@ -242,6 +245,28 @@ def test_install_sets_the_machine_up_for_the_user_running_it(home):
     calls = home.system_calls()
     assert "sudo tee /etc/systemd/system/assistant-watcher.service" in calls and "crontab -" in calls
     assert ["plugin", "install", "telegram@claude-plugins-official", "--scope", "project"] in home.fake.argvs()
+
+
+def test_install_installs_uv_when_it_is_missing(home):
+    (home.fake.bin / "uv").unlink()
+    (home.fake.bin / "curl").write_text('#!/bin/sh\necho "$*" > "$FAKE_CLAUDE_DIR/curl"\n'
+                                        'echo \'echo "$UV_NO_MODIFY_PATH" > "$FAKE_CLAUDE_DIR/uv-installer"\'\n')
+    (home.fake.bin / "curl").chmod(0o755)
+
+    r = home.run("install")
+
+    assert r.returncode == 0, r.stderr
+    assert "https://astral.sh/uv/install.sh" in (home.fake.home / "curl").read_text()
+    assert (home.fake.home / "uv-installer").read_text().strip() == "1"  # it leaves the shell profiles alone
+
+
+def test_the_router_gets_the_path_the_mcp_servers_it_checks_need(home):
+    """uv, uvx and bun live in ~/.local/bin and ~/.bun/bin, which systemd's own PATH leaves out."""
+    home.run("install")
+
+    unit = (home.fake.home / "assistant-watcher.service").read_text()
+    path = next(line for line in unit.splitlines() if line.startswith("Environment=PATH=")).split("=", 2)[2]
+    assert path.split(":")[:2] == [f"{home.home}/.local/bin", f"{home.home}/.bun/bin"]
 
 
 def test_setup_saves_the_bot_and_an_api_key(home):

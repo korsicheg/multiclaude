@@ -36,10 +36,10 @@ Add-ins are in the repo but off until the owner turns them on. The core works fu
 - Any Linux machine with systemd, and a user with passwordless sudo. The bot and every person's assistant run as that user, with full admin rights, so add only people you would trust with the machine.
 - The machine's timezone set to UTC (`sudo timedatectl set-timezone UTC`): cron runs in it, and the bot reads cron times as UTC.
 - [Claude Code](https://code.claude.com), with its first-run onboarding done (run `claude` once by hand). The sessions use either Claude Code's own login (a Claude Pro or Max plan: run `claude`, then `/login`) or an Anthropic API key.
-- [Bun](https://bun.sh) (the Telegram plugin runs on it), plus `tmux`, `jq`, `curl` 8.3+, `git`, `openssl` and Python 3.10+.
+- [Bun](https://bun.sh) (the Telegram plugin runs on it), plus `tmux`, `jq`, `curl` 8.3+, `git`, `openssl` and Python 3.10+. `assistant install` adds [uv](https://docs.astral.sh/uv/) if it's missing.
 - A Telegram bot token. Message [@BotFather](https://t.me/BotFather), send `/newbot`, pick a name and a username ending in `bot`, and copy the token.
 - For the control panel: a free Cloudflare account, and Node.js (`npx` runs `wrangler` to deploy the relay). Everything else works without it.
-- For development: [uv](https://docs.astral.sh/uv/), Node.js and `shellcheck`, which `./check` uses.
+- For development: Node.js and `shellcheck`, which `./check` uses with uv.
 
 ## Setup
 
@@ -60,6 +60,7 @@ git clone https://github.com/korsicheg/multiclaude ~/assistant
 It links `assistant`, `tg` and `claude-usage` into `~/.local/bin` (make sure that is on your `PATH`), and then:
 
 - adds three Claude Code managed settings in `/etc/claude-code/managed-settings.json`: `channelsEnabled`, so the front desk can use `--channels`; `skipDangerousModePermissionPrompt`, so the bypass-permissions warning doesn't hold up sessions nobody watches; and `cleanupPeriodDays`, which keeps the transcripts that `--continue` and the router read.
+- installs [uv](https://docs.astral.sh/uv/) into `~/.local/bin` if it's missing: plugins' MCP servers and the voice-notes add-in run with `uv` and `uvx`.
 - sets up the status line, which saves the snapshot `/usage`, `/model` and `/effort` read.
 - writes the assistants' rules to `~/workspaces/.claude/CLAUDE.md`, from `system/workspaces-CLAUDE.md` and the rules of each add-in that is on. Claude Code loads a parent folder's `.claude/CLAUDE.md`, so every assistant reads it, and the front desk never does.
 - installs the Telegram plugin for the repo's folder only (its `.claude/settings.json` enables it there).
