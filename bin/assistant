@@ -152,7 +152,7 @@ install_services() {
 install_shared_sync() {
   local line="3-59/10 * * * * $ROOT/bin/assistant shared sync >> $ROOT/logs/shared.log 2>&1"
   crontab -l 2>/dev/null | grep -qF "$ROOT/bin/assistant shared sync" && return
-  { crontab -l 2>/dev/null; echo "# assistant: shared plugins, skills and marketplaces, every 10 minutes"; echo "$line"; } |
+  { crontab -l 2>/dev/null || true; echo "# assistant: shared plugins, skills and marketplaces, every 10 minutes"; echo "$line"; } |
     crontab -
 }
 

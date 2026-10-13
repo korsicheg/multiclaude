@@ -94,6 +94,26 @@ def home(tmp_path, bot_api):
     return Home(tmp_path, bot_api)
 
 
+KEPT_CRONTAB = """#!/bin/sh
+case "$1" in
+  -l) cat "$FAKE_CLAUDE_DIR/crontab" 2>/dev/null || { echo "no crontab for this user" >&2; exit 1; } ;;
+  -) cat > "$FAKE_CLAUDE_DIR/crontab.new" && mv "$FAKE_CLAUDE_DIR/crontab.new" "$FAKE_CLAUDE_DIR/crontab" ;;  # as cron: all or nothing
+esac
+"""
+
+
+@pytest.fixture
+def kept_crontab(home):
+    """home with a crontab that keeps what it's given, starting with none at all, as on a new machine."""
+    (home.fake.bin / "crontab").write_text(KEPT_CRONTAB)
+    return home
+
+
+def crontab(home):
+    path = home.fake.home / "crontab"
+    return path.read_text() if path.exists() else ""
+
+
 def job_answer(result, cost=0.02):
     return json.dumps({"result": result, "total_cost_usd": cost, "session_id": "s1"})
 
@@ -245,6 +265,13 @@ def test_install_sets_the_machine_up_for_the_user_running_it(home):
     calls = home.system_calls()
     assert "sudo tee /etc/systemd/system/assistant-watcher.service" in calls and "crontab -" in calls
     assert ["plugin", "install", "telegram@claude-plugins-official", "--scope", "project"] in home.fake.argvs()
+
+
+def test_install_schedules_the_shared_sync_on_a_machine_with_no_crontab_yet(kept_crontab):
+    r = kept_crontab.run("install")
+
+    assert r.returncode == 0, r.stderr
+    assert f"{kept_crontab.root}/bin/assistant shared sync" in crontab(kept_crontab)
 
 
 def test_install_installs_uv_when_it_is_missing(home):
