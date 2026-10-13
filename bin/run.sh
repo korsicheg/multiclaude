@@ -9,6 +9,9 @@ set -u
 
 cd "$ROOT" || exit 1
 load_env
+# On a new machine Claude Code first asks whether to trust this folder, and nobody
+# watches this terminal: the plugin would never start. Trust it, as run-user.sh does.
+export CLAUDE_CODE_SANDBOXED=1
 
 while true; do
   # Claude Code remembers MCP servers that failed to connect and skips them at

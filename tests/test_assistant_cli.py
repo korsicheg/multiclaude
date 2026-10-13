@@ -205,6 +205,18 @@ def test_add_user_gives_whats_shared_back_before_the_newcomers_session_starts(ho
     assert home.sent() == [f"🔽 Back in each person's own folder:\n- plugin {foo} (Bob joined)"]
 
 
+def test_the_front_desk_starts_trusted_so_no_trust_prompt_holds_it_up(home):
+    """On a new machine Claude Code asks whether to trust ~/assistant, and nobody watches that terminal."""
+    seen = home.fake.home / "front-desk-sandboxed"
+    (home.fake.bin / "claude").write_text(f'#!/bin/sh\necho "$CLAUDE_CODE_SANDBOXED" > {seen}\nkill $PPID\n')
+
+    outside = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SANDBOXED"}  # as systemd starts it
+    subprocess.run([str(home.root / "bin" / "run.sh")], env={**outside, "HOME": str(home.home)},
+                   capture_output=True, timeout=60)
+
+    assert seen.read_text().strip() == "1"
+
+
 def test_notify_succeeds_when_tg_holds_the_message_for_later(home, monkeypatch):
     import socket
     monkeypatch.setenv("TG_CONNECT_WITHIN", "1")
