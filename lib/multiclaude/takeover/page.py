@@ -6,6 +6,9 @@ logs nothing, since every request line carries the token.
   GET  /<token>/frame?after=N   the browser's latest frame once it's newer than frame N (X-Frame:
                                 its number), held up to FRAME_WAIT seconds; 204 if none came
   POST /<token>/input           one action, as controls.py takes it
+  POST /<token>/screen          {"width", "height"}: the CSS pixels the page has for the browser, which
+                                its viewport is fitted to (viewport.py). A fit agent-browser fails is
+                                logged, and answered 204 all the same: the page shows the frames scaled.
   POST /<token>/end             {"outcome": "done" | "gave-up"}: the person tapped Done or I can't do it
 Once the take-over has ended, everything under the token answers 410."""
 import hmac
@@ -13,11 +16,14 @@ import html
 import http.server
 import json
 import re
+import sys
 import urllib.parse
 from pathlib import Path
 
 from multiclaude import bot
+from multiclaude.log import log
 from multiclaude.takeover import controls
+from multiclaude.takeover.browser import NoBrowser
 
 PAGE = Path(__file__).with_name("page.html")
 PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
@@ -42,14 +48,21 @@ def page_html(task, expires):
 class PageServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, token, stream, ending, page):
-        """stream: the browser's Stream; ending: the take-over's Ending, which the page's Done ends."""
+    def __init__(self, token, browser, ending, page):
+        """browser: the Browser taken over (its stream and viewport); ending: the take-over's
+        Ending, which the page's Done ends."""
         super().__init__(("127.0.0.1", 0), Handler)
-        self.token, self.stream, self.ending, self.page = token, stream, ending, page.encode()
+        self.token, self.browser, self.ending, self.page = token, browser, ending, page.encode()
 
     @property
     def port(self):
         return self.server_address[1]
+
+    def handle_error(self, request, client_address):
+        """A page that went away mid-answer is no error: cloudflared hangs up the connections it
+        holds as the tunnel closes, and a phone drops them as it sleeps."""
+        if not isinstance(sys.exc_info()[1], ConnectionError):
+            super().handle_error(request, client_address)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -72,6 +85,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         route = self.route()
         if route == "input":
             self.take_input()
+        elif route == "screen":
+            self.take_screen()
         elif route == "end":
             self.take_end()
         else:
@@ -94,7 +109,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             after = int(query.get("after", ["0"])[0])
         except ValueError:
             return self.reply(400)
-        frame = self.server.stream.next_frame(after, FRAME_WAIT)
+        frame = self.server.browser.stream.next_frame(after, FRAME_WAIT)
         if self.server.ending.over:
             self.reply(410)
         elif frame is None:
@@ -106,14 +121,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
         action = self.read_json()
         if self.server.ending.over:
             return self.reply(410)
+        stream = self.server.browser.stream
         try:
-            events = controls.events(action, self.server.stream.frame)
+            events = controls.events(action, stream.frame)
         except ValueError:
             return self.reply(400)
         try:
-            self.server.stream.send(events)
+            stream.send(events)
         except OSError:
             return self.reply(502)
+        self.reply(204)
+
+    def take_screen(self):
+        size = self.read_json()
+        if self.server.ending.over:
+            return self.reply(410)
+        try:
+            self.server.browser.viewport.fit(size)
+        except ValueError:
+            return self.reply(400)
+        except NoBrowser as e:
+            log(f"takeover: couldn't fit the viewport to the page: {e}")
         self.reply(204)
 
     def take_end(self):

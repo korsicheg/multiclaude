@@ -22,10 +22,11 @@ class Frame:
     height: int
     device_width: float  # the page's CSS pixels across
 
-    def device_point(self, across, down):
-        """The page's CSS pixel at a point given as fractions of the frame across and down. The
-        frame shows the page's viewport, which can be shorter than the deviceHeight the stream
-        reports (the window's), so both axes take the scale of the width."""
+    def css_pixels(self, across, down):
+        """The page's CSS pixels for a point, or a distance, given as fractions of the frame across
+        and down. Once the viewport is fitted to the person's screen they're the frame's pixels;
+        until then the frame shows the page's viewport, which can be shorter than the deviceHeight
+        the stream reports (the window's), so both axes take the scale of the width."""
         scale = self.device_width / self.width
         return round(across * self.width * scale, 1), round(down * self.height * scale, 1)
 

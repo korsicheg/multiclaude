@@ -1,6 +1,7 @@
 """Browser take-overs (bin/takeover, lib/multiclaude/takeover): finding the browser's stream, the
-bridge to it, the page's server, the tunnel, and how a take-over ends. agent-browser, its stream
-server, cloudflared and Telegram are fakes; nothing leaves the machine."""
+bridge to it, fitting its viewport to the person's screen, the page's server, the tunnel, and how a
+take-over ends. agent-browser, its stream server, cloudflared and Telegram are fakes; nothing leaves
+the machine."""
 import base64
 import hashlib
 import json
@@ -9,10 +10,12 @@ import queue
 import re
 import signal
 import socket
+import struct
 import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from types import SimpleNamespace
 
@@ -28,11 +31,11 @@ GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 def tk(lib, monkeypatch):
     """The takeover package, with short waits."""
     from multiclaude import paths, telegram, websocket
-    from multiclaude.takeover import browser, controls, notice, page, run, stream, tunnel
+    from multiclaude.takeover import browser, controls, notice, page, run, stream, tunnel, viewport
     monkeypatch.setattr(page, "FRAME_WAIT", 0.2)
     monkeypatch.setattr(run, "CHECK_EVERY", 0.02)
     return SimpleNamespace(paths=paths, telegram=telegram, websocket=websocket, browser=browser, controls=controls,
-                           notice=notice, page=page, run=run, stream=stream, tunnel=tunnel)
+                           notice=notice, page=page, run=run, stream=stream, tunnel=tunnel, viewport=viewport)
 
 
 def jpeg(width, height):
@@ -87,7 +90,7 @@ def test_the_stream_port_is_the_one_stream_status_names(tk, monkeypatch):
         "session list": {"sessions": ["shop", "booking"]},
         "--session booking stream status": status(41713)})
 
-    assert tk.browser.stream_port("booking") == 41713
+    assert tk.browser.Session("booking").stream_port() == 41713
     assert [args for args, _ in calls] == ["session list", "--session booking stream status"]
 
 
@@ -97,7 +100,7 @@ def test_a_stream_turned_off_is_turned_on_again(tk, monkeypatch):
         "--session booking stream status": status(enabled=False),
         "--session booking stream enable": status(40001)})
 
-    assert tk.browser.stream_port("booking") == 40001
+    assert tk.browser.Session("booking").stream_port() == 40001
     assert calls[-1][0] == "--session booking stream enable"
 
 
@@ -106,7 +109,7 @@ def test_a_session_that_isnt_running_is_never_started(tk, monkeypatch):
     calls = fake_agent_browser(monkeypatch, tk.browser, {"session list": {"sessions": ["shop"]}})
 
     with pytest.raises(tk.browser.NoBrowser, match="no agent-browser session 'booking'"):
-        tk.browser.stream_port("booking")
+        tk.browser.Session("booking").stream_port()
     assert [args for args, _ in calls] == ["session list"]
 
 
@@ -116,15 +119,36 @@ def test_a_session_without_a_browser_open_cant_be_taken_over(tk, monkeypatch):
         "--session booking stream status": status(connected=False)})
 
     with pytest.raises(tk.browser.NoBrowser, match="no browser open"):
-        tk.browser.stream_port("booking")
+        tk.browser.Session("booking").stream_port()
 
 
 def test_a_session_a_plugin_runs_under_its_own_home_is_asked_there(tk, monkeypatch):
     calls = fake_agent_browser(monkeypatch, tk.browser, {
         "session list": {"sessions": ["dei"]}, "--session dei stream status": status(36371)})
 
-    assert tk.browser.stream_port("dei", home="/ws/alice/.agent-browser") == 36371
+    assert tk.browser.Session("dei", home="/ws/alice/.agent-browser").stream_port() == 36371
     assert {home for _, home in calls} == {"/ws/alice/.agent-browser"}
+
+
+VIEWPORT_EVAL = "--session booking eval [innerWidth, innerHeight, devicePixelRatio]"
+
+
+def test_the_viewport_is_read_as_the_page_sees_it_and_set_at_its_scale(tk, monkeypatch):
+    calls = fake_agent_browser(monkeypatch, tk.browser, {
+        VIEWPORT_EVAL: {"origin": "https://example.com/", "result": [1280, 633, 2]},
+        "--session booking set viewport 1440 789 2": {"width": 1440, "height": 789, "deviceScaleFactor": 2.0}})
+    session = tk.browser.Session("booking")
+
+    assert session.viewport() == tk.browser.Viewport(1280, 633, 2.0)
+    session.set_viewport(tk.browser.Viewport(1440, 789, 2.0))
+    assert calls[-1][0] == "--session booking set viewport 1440 789 2"
+
+
+def test_a_viewport_that_cant_be_read_is_no_browser(tk, monkeypatch):
+    fake_agent_browser(monkeypatch, tk.browser, {VIEWPORT_EVAL: {"origin": "about:blank", "result": "nope"}})
+
+    with pytest.raises(tk.browser.NoBrowser, match="no viewport"):
+        tk.browser.Session("booking").viewport()
 
 
 def test_agent_browsers_own_error_is_passed_on(tk):
@@ -174,8 +198,8 @@ def test_a_point_on_the_frame_becomes_the_pages_css_pixel(tk):
     (the window's, not the viewport's), so both axes scale with the width."""
     frame = tk.stream.Frame(1, b"", width=640, height=316, device_width=1280)
 
-    assert frame.device_point(0.5, 0.5) == (640, 316)
-    assert frame.device_point(1, 1) == (1280, 632)
+    assert frame.css_pixels(0.5, 0.5) == (640, 316)
+    assert frame.css_pixels(1, 1) == (1280, 632)
 
 
 class FakeStreamServer:
@@ -245,17 +269,100 @@ def test_the_bridge_follows_the_stream_server_and_sends_it_input(tk):
     assert stream.closed and stream.next_frame(0, wait=0) is None
 
 
+# --- the viewport ----------------------------------------------------------------------------------
+
+class FakeSession:
+    """An agent-browser session as a take-over sees it: its stream's port, its viewport, and each
+    viewport it was given (set). fail: the error each viewport command fails with, if any."""
+
+    def __init__(self, tk, port=41713, viewport=(1280, 633, 1.0)):
+        self.browser, self.port = tk.browser, port
+        self.current, self.set, self.fail = tk.browser.Viewport(*viewport), [], None
+
+    def stream_port(self):
+        return self.port
+
+    def viewport(self):
+        self.check()
+        return self.current
+
+    def set_viewport(self, viewport):
+        self.check()
+        self.set.append(viewport)
+        self.current = viewport
+
+    def check(self):
+        if self.fail:
+            raise self.browser.NoBrowser(self.fail)
+
+
+def sizes(viewports):
+    return [(viewport.width, viewport.height) for viewport in viewports]
+
+
+def test_the_viewport_takes_the_room_the_page_has_at_the_pages_own_scale(tk):
+    session = FakeSession(tk, viewport=(1280, 633, 2.0))
+    fitting = tk.viewport.Fitting(session)
+
+    fitting.fit({"width": 1440, "height": 789.4})
+    fitting.fit({"width": 1440, "height": 789})  # the same size again changes nothing
+
+    assert session.set == [tk.browser.Viewport(1440, 789, 2.0)]
+
+
+def test_a_fitted_viewport_stays_within_sane_sizes(tk):
+    session = FakeSession(tk)
+    fitting = tk.viewport.Fitting(session)
+
+    fitting.fit({"width": 200, "height": 150})
+    fitting.fit({"width": 5000, "height": 3000})
+
+    assert sizes(session.set) == [(320, 320), (2560, 1600)]
+
+
+@pytest.mark.parametrize("size", [None, {}, {"width": 390}, {"width": "wide", "height": 700}, {"width": [390], "height": 700},
+                                  {"width": float("nan"), "height": 700}, {"width": 1e400, "height": 700}])
+def test_a_size_that_isnt_one_is_refused(tk, size):
+    session = FakeSession(tk)
+
+    with pytest.raises(ValueError):
+        tk.viewport.Fitting(session).fit(size)
+    assert session.set == []
+
+
+def test_the_viewport_is_put_back_as_it_was_and_fitted_no_more(tk):
+    session = FakeSession(tk, viewport=(1280, 633, 1.0))
+    fitting = tk.viewport.Fitting(session)
+    fitting.fit({"width": 390, "height": 664})
+    fitting.fit({"width": 664, "height": 390})  # turned on its side
+
+    fitting.restore()
+    fitting.fit({"width": 1440, "height": 789})  # a late one, from a page still open
+
+    assert sizes(session.set) == [(390, 664), (664, 390), (1280, 633)]
+
+
+def test_a_viewport_never_fitted_is_left_alone(tk):
+    session = FakeSession(tk)
+
+    tk.viewport.Fitting(session).restore()
+
+    assert session.set == []
+
+
 # --- the page --------------------------------------------------------------------------------------
 
 @pytest.fixture
 def page(tk):
-    """The page's server for a stream over a socket pair, under TOKEN."""
+    """The page's server for a stream over a socket pair and a fake session, under TOKEN."""
     stream, browser = socket_stream(tk)
+    session = FakeSession(tk)
     ending = tk.run.Ending()
-    server = tk.page.PageServer(TOKEN, stream, ending, tk.page.page_html("Tick **the** box & <tap> Done", time.time() + 60))
+    taken = tk.run.Browser(stream, tk.viewport.Fitting(session))
+    server = tk.page.PageServer(TOKEN, taken, ending, tk.page.page_html("Tick **the** box & <tap> Done", time.time() + 60))
     threading.Thread(target=server.serve_forever, args=(0.02,), daemon=True).start()  # quick to shut down
-    yield SimpleNamespace(stream=stream, browser=browser, ending=ending, url=f"http://127.0.0.1:{server.port}/{TOKEN}/",
-                          root=f"http://127.0.0.1:{server.port}")
+    yield SimpleNamespace(stream=stream, browser=browser, session=session, ending=ending,
+                          url=f"http://127.0.0.1:{server.port}/{TOKEN}/", root=f"http://127.0.0.1:{server.port}")
     server.shutdown()
     server.server_close()
 
@@ -294,12 +401,16 @@ def test_the_frame_endpoint_serves_the_latest_frame_once_it_is_newer(page):
     assert fetch(page.url + "frame?after=1")[0] == 204
 
 
-def test_a_tap_reaches_the_browser_at_the_pages_css_pixels(page):
+def post_input(page, *actions):
+    for action in actions:
+        assert fetch(page.url + "input", data=action)[0] == 204
+
+
+def test_a_tap_or_a_drag_reaches_the_browser_at_the_pages_css_pixels(page):
     page.stream.take(frame_message(jpeg(640, 316), device_width=1280))
 
-    assert fetch(page.url + "input", data={"kind": "press", "x": 0.25, "y": 0.5})[0] == 204
-    assert fetch(page.url + "input", data={"kind": "move", "x": 0.5, "y": 0.5})[0] == 204
-    assert fetch(page.url + "input", data={"kind": "release", "x": 0.5, "y": 0.5})[0] == 204
+    post_input(page, {"kind": "press", "x": 0.25, "y": 0.5}, {"kind": "move", "x": 0.5, "y": 0.5, "button": "left"},
+               {"kind": "release", "x": 0.5, "y": 0.5})
 
     common = {"type": "input_mouse", "y": 316, "modifiers": 0}
     assert sent_events(page, 4) == [
@@ -309,21 +420,43 @@ def test_a_tap_reaches_the_browser_at_the_pages_css_pixels(page):
         {**common, "eventType": "mouseReleased", "x": 640, "button": "left", "clickCount": 1}]
 
 
-def test_scrolling_turns_the_wheel_where_the_person_last_touched(page):
+def test_a_mouse_hovers_and_clicks_with_any_button_twice_over_and_keys_held(page):
+    """Hovering opens a menu; a double click's second press and release count 2; Shift+click selects."""
+    page.stream.take(frame_message(jpeg(1440, 789), device_width=1440))
+
+    post_input(page, {"kind": "move", "x": 0.1, "y": 0.1},
+               {"kind": "press", "x": 0.5, "y": 0.5, "button": "right", "clicks": 2, "modifiers": 8},
+               {"kind": "release", "x": 0.5, "y": 0.5, "button": "right", "clicks": 2, "modifiers": 8})
+
+    hover, _, pressed, released = sent_events(page, 4)
+    assert (hover["eventType"], hover["button"], hover["x"]) == ("mouseMoved", "none", 144)
+    assert [(e["eventType"], e["button"], e["clickCount"], e["modifiers"]) for e in (pressed, released)] == [
+        ("mousePressed", "right", 2, 8), ("mouseReleased", "right", 2, 8)]
+
+
+def test_a_wheel_turns_by_fractions_of_the_frame_where_the_pointer_is(page):
     page.stream.take(frame_message(jpeg(1280, 633)))
 
-    fetch(page.url + "input", data={"kind": "scroll", "direction": "up", "x": 0.5, "y": 0.1})
+    post_input(page, {"kind": "wheel", "x": 0.5, "y": 0.1, "dx": 0.05, "dy": -0.8})
 
     assert sent_events(page, 1) == [{"type": "input_mouse", "eventType": "mouseWheel", "x": 640, "y": 63.3,
-                                     "button": "none", "clickCount": 0, "modifiers": 0, "deltaX": 0, "deltaY": -400}]
+                                     "button": "none", "clickCount": 0, "modifiers": 0, "deltaX": 64, "deltaY": -506.4}]
 
 
 def test_typing_presses_a_key_for_each_character_and_the_buttons_their_keys(page):
-    assert fetch(page.url + "input", data={"kind": "text", "text": "a1 é"})[0] == 204
-    assert fetch(page.url + "input", data={"kind": "key", "key": "Enter"})[0] == 204
+    post_input(page, {"kind": "text", "text": "a1 é\n"}, {"kind": "key", "key": "Enter"})
 
-    downs = [(e["key"], e["text"], e["windowsVirtualKeyCode"]) for e in sent_events(page, 10) if e["eventType"] == "keyDown"]
-    assert downs == [("a", "a", 65), ("1", "1", 49), (" ", " ", 32), ("é", "é", 0), ("Enter", "\r", 13)]
+    downs = [(e["key"], e["text"], e["windowsVirtualKeyCode"]) for e in sent_events(page, 12) if e["eventType"] == "keyDown"]
+    assert downs == [("a", "a", 65), ("1", "1", 49), (" ", " ", 32), ("é", "é", 0), ("Enter", "\r", 13), ("Enter", "\r", 13)]
+
+
+def test_keys_that_type_nothing_and_shortcuts_go_with_the_keys_held(page):
+    """Shift+ArrowLeft selects a character; Control+A selects everything, typing no "a"."""
+    post_input(page, {"kind": "key", "key": "ArrowLeft", "modifiers": 8}, {"kind": "key", "key": "a", "modifiers": 2})
+
+    downs = [(e["key"], e["code"], e["text"], e["windowsVirtualKeyCode"], e["modifiers"])
+             for e in sent_events(page, 4) if e["eventType"] == "keyDown"]
+    assert downs == [("ArrowLeft", "ArrowLeft", "", 37, 8), ("a", "KeyA", "", 65, 2)]
 
 
 def test_every_key_event_carries_every_field_the_stream_server_needs(tk):
@@ -334,8 +467,10 @@ def test_every_key_event_carries_every_field_the_stream_server_needs(tk):
 
 @pytest.mark.parametrize("action", [
     {"kind": "click", "x": 0.5, "y": 0.5}, {"kind": "press"}, {"kind": "press", "x": "left", "y": 0},
+    {"kind": "press", "x": 0, "y": 0, "button": "back"}, {"kind": "press", "x": 0, "y": 0, "modifiers": 16},
+    {"kind": "move", "x": 0, "y": 0, "button": "both"}, {"kind": "wheel", "x": 0, "y": 0},
     {"kind": "text", "text": ""}, {"kind": "text", "text": "x" * 1001}, {"kind": "key", "key": "F5"},
-    {"kind": "scroll", "direction": "sideways", "x": 0, "y": 0}, ["press"]])
+    {"kind": "key", "key": "ab"}, {"kind": "key", "key": ["Enter"]}, {"kind": ["press"]}, ["press"]])
 def test_actions_the_browser_cant_take_get_400(page, action):
     page.stream.take(frame_message(jpeg(1280, 633)))
 
@@ -346,6 +481,20 @@ def test_a_press_before_the_first_frame_gets_400(page):
     assert fetch(page.url + "input", data={"kind": "press", "x": 0.5, "y": 0.5})[0] == 400
 
 
+def test_the_room_the_page_reports_fits_the_viewport(page):
+    assert fetch(page.url + "screen", data={"width": 390, "height": 664})[0] == 204
+    assert fetch(page.url + "screen", data={"width": "wide"})[0] == 400
+
+    assert sizes(page.session.set) == [(390, 664)]
+
+
+def test_a_fit_agent_browser_fails_is_logged_and_the_page_carries_on(page, capfd):
+    page.session.fail = "Browser not launched"
+
+    assert fetch(page.url + "screen", data={"width": 390, "height": 664})[0] == 204
+    assert "couldn't fit the viewport" in capfd.readouterr().err
+
+
 def test_done_and_i_cant_do_it_end_the_take_over_and_then_everything_answers_410(page):
     assert fetch(page.url + "end", data={"outcome": "finished"})[0] == 400
     assert fetch(page.url + "end", data={"outcome": "gave-up"})[0] == 204
@@ -354,6 +503,18 @@ def test_done_and_i_cant_do_it_end_the_take_over_and_then_everything_answers_410
     assert page.ending.outcome == "gave-up"
     assert fetch(page.url + "frame?after=0")[0] == 410
     assert fetch(page.url + "input", data={"kind": "text", "text": "late"})[0] == 410
+    assert fetch(page.url + "screen", data={"width": 390, "height": 664})[0] == 410
+
+
+def test_a_page_that_goes_away_mid_answer_is_no_error(page, capfd):
+    """cloudflared hangs up the connections it holds as the tunnel closes, a frame request among them."""
+    connection = socket.create_connection(("127.0.0.1", urllib.parse.urlsplit(page.root).port))
+    connection.sendall(f"GET /{TOKEN}/frame?after=0 HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+    connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))  # hang up with a reset
+    connection.close()
+    time.sleep(0.5)  # past FRAME_WAIT, when the answer meets the closed connection
+
+    assert "Exception" not in capfd.readouterr().err
 
 
 def test_nothing_is_logged_since_every_request_carries_the_token(page, capfd):
@@ -470,9 +631,10 @@ class KeptLink:
         self.outcome = outcome
 
 
-def take_over(tk, seconds=30, then=None):
-    """Run a take-over of a stream over a socket pair; then(link, stream) does what the person (or
-    the browser) does once the link is out. (outcome, the notice, the stream)."""
+def take_over(tk, seconds=30, then=None, session=None):
+    """Run a take-over of a stream over a socket pair and session (a FakeSession); then(link,
+    stream) does what the person (or the browser) does once the link is out. (outcome, the
+    notice, the stream)."""
     stream, _ = socket_stream(tk)
     notice = KeptLink()
 
@@ -482,7 +644,8 @@ def take_over(tk, seconds=30, then=None):
             then(notice.link, stream)
 
     threading.Thread(target=act, daemon=True).start()
-    outcome = tk.run.TakeOver(stream, FakeTunnel(), notice, seconds).run("Tick the box")
+    browser = tk.run.Browser(stream, tk.viewport.Fitting(session or FakeSession(tk)))
+    outcome = tk.run.TakeOver(browser, FakeTunnel(), notice, seconds).run("Tick the box")
     return outcome, notice, stream
 
 
@@ -494,6 +657,45 @@ def test_a_tap_on_the_page_ends_the_take_over_and_closes_the_way_in(tk, tapped):
     assert FakeTunnel.made[-1].closed and stream.closed
     with pytest.raises(OSError):
         fetch(notice.link)  # the page's server is gone too
+
+
+def fit_then(size, then):
+    """The person's page reporting its room, then then(link, stream)."""
+    def act(link, stream):
+        fetch(link + "screen", data=size)
+        then(link, stream)
+    return act
+
+
+def test_the_viewport_is_put_back_once_the_person_is_done(tk):
+    session = FakeSession(tk, viewport=(1280, 633, 1.0))
+
+    take_over(tk, session=session,
+              then=fit_then({"width": 1440, "height": 789}, lambda link, _: fetch(link + "end", data={"outcome": "done"})))
+
+    assert sizes(session.set) == [(1440, 789), (1280, 633)]
+
+
+def test_a_browser_that_closed_is_left_alone(tk):
+    """Any agent-browser command for its session would start it again."""
+    session = FakeSession(tk)
+
+    outcome, _, _ = take_over(tk, session=session,
+                              then=fit_then({"width": 390, "height": 664}, lambda link, stream: stream.close()))
+
+    assert outcome == "closed" and sizes(session.set) == [(390, 664)]
+
+
+def test_a_viewport_that_cant_be_put_back_is_logged(tk, capfd):
+    session = FakeSession(tk)
+
+    def done_as_the_browser_fails(link, _):
+        session.fail = "Browser not launched"
+        fetch(link + "end", data={"outcome": "done"})
+
+    outcome, _, _ = take_over(tk, session=session, then=fit_then({"width": 390, "height": 664}, done_as_the_browser_fails))
+
+    assert outcome == "done" and "couldn't put the viewport back: Browser not launched" in capfd.readouterr().err
 
 
 def test_a_take_over_expires_after_its_time(tk):
@@ -522,7 +724,7 @@ def command(tk, bot_api, monkeypatch):
     """`takeover` as an assistant runs it, for chat ALICE_CHAT, against a fake stream server, the
     fake tunnel and the fake Bot API (command.api); the signal handlers it sets are put back afterwards."""
     server = FakeStreamServer(tk)
-    monkeypatch.setattr(tk.run, "stream_port", lambda session, home: server.port)
+    monkeypatch.setattr(tk.run, "Session", lambda name, home: FakeSession(tk, port=server.port))
     monkeypatch.setattr(tk.run, "Tunnel", FakeTunnel)
     monkeypatch.setattr(tk.notice, "BotApi", lambda timeout: tk.telegram.BotApi(timeout=timeout, base=bot_api.url))
     monkeypatch.setenv("TG_CHAT_ID", ALICE_CHAT)

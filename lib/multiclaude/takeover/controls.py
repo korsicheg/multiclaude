@@ -1,15 +1,49 @@
 """What the person does on the take-over page, as the input events agent-browser's stream server
-takes. The page sends one action at a time ({"kind": "press", "x": 0.42, "y": 0.17}), its points
-as fractions of the frame it shows; they become the page's CSS pixels here. The stream server
-drops an event that lacks a field it expects, so every event carries all of them."""
+takes. The page sends one action at a time, its points and wheel turns as fractions of the frame
+it shows; they become the page's CSS pixels here. The stream server drops an event that lacks a
+field it expects, so every event carries all of them.
 
-KEY_CODES = {"Enter": 13, "Backspace": 8, "Tab": 9}  # the keys the page has buttons for: Windows key codes
-TYPED_BY_KEY = {"Enter": "\r"}                       # what a key types, for those that type something
+  {"kind": "press", "x": 0.42, "y": 0.17, "button": "left", "clicks": 1, "modifiers": 0}
+      a mouse button or a finger going down; "release", with the same fields, is it coming up
+  {"kind": "move", "x": 0.42, "y": 0.17, "button": "none"}
+      the pointer moving: hovering, or dragging with a button down ("left")
+  {"kind": "wheel", "x": 0.42, "y": 0.17, "dx": 0, "dy": 0.25}
+      a wheel or trackpad turn over the point
+  {"kind": "text", "text": "Hello"}
+      characters to type
+  {"kind": "key", "key": "ArrowLeft", "modifiers": 8}
+      a key that types nothing (Enter types its return), pressed and let go, or a shortcut's
+      letter ({"key": "a", "modifiers": 2} is Control+A)
+
+The fields shown after the point are optional, with those defaults. Modifiers are the keys held,
+added up: Alt 1, Control 2, Meta 4, Shift 8."""
+from dataclasses import dataclass
+
+KEY_CODES = {"Enter": 13, "Tab": 9, "Backspace": 8, "Escape": 27, "Delete": 46,  # Windows key codes
+             "Home": 36, "End": 35, "PageUp": 33, "PageDown": 34,
+             "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40}
+TYPED_BY_KEY = {"Enter": "\r"}  # what a key types, for those that type something
 KEY_FOR_CHARACTER = {"\n": "Enter", "\t": "Tab"}
 SPACE_KEY_CODE = 32
-SCROLL_STEP = 400  # CSS pixels per tap on a scroll button
-SCROLL_DIRECTIONS = {"up": -1, "down": 1}
-TEXT_MAX = 1000    # characters in one Send
+BUTTONS = ("left", "middle", "right")
+MOST_CLICKS = 3            # a triple click selects a paragraph
+MODIFIERS = range(16)      # every sum of Alt 1, Control 2, Meta 4 and Shift 8
+MOST_TURN = 10             # frames' worth of scrolling in one wheel turn
+TEXT_MAX = 1000            # characters in one action
+
+
+@dataclass(frozen=True)
+class Key:
+    name: str      # KeyboardEvent.key
+    code: str      # KeyboardEvent.code, the key's place on the keyboard
+    text: str      # what it types
+    key_code: int  # the Windows key code pages see as keyCode
+
+    def events(self, modifiers=0):
+        """The key going down, which types its text, and up again."""
+        fields = {"type": "input_keyboard", "key": self.name, "code": self.code,
+                  "windowsVirtualKeyCode": self.key_code, "modifiers": modifiers}
+        return [{**fields, "eventType": "keyDown", "text": self.text}, {**fields, "eventType": "keyUp", "text": ""}]
 
 
 def events(action, frame):
@@ -19,62 +53,88 @@ def events(action, frame):
     if kind == "text":
         return typed(action.get("text"))
     if kind == "key":
-        return key_press(action.get("key"))
-    pointing = {"press": press, "move": move, "release": release,
-                "scroll": lambda point: scroll(point, action.get("direction"))}
-    if kind not in pointing:
+        return pressed_key(action.get("key")).events(modifiers(action))
+    pointing = {"press": press, "release": release, "move": move, "wheel": wheel}
+    if not isinstance(kind, str) or kind not in pointing:  # a list or an object can't be looked up
         raise ValueError(f"no such action: {kind!r}")
     if frame is None:
         raise ValueError("no frame to point at yet")
-    return pointing[kind](frame.device_point(*fractions(action)))
+    return pointing[kind](action, frame)
 
 
-def press(point):
-    """The pointer goes down: over the point first, as a real mouse would be."""
-    return [mouse("mouseMoved", point, button="none"), mouse("mousePressed", point, click_count=1)]
+def press(action, frame):
+    """A button goes down: over the point first, as a real mouse would be."""
+    point = point_of(action, frame)
+    return [mouse("mouseMoved", point), mouse("mousePressed", point, **clicking(action))]
 
 
-def move(point):
-    """The pointer moves while it's down: a drag, such as a slider's."""
-    return [mouse("mouseMoved", point)]
+def release(action, frame):
+    return [mouse("mouseReleased", point_of(action, frame), **clicking(action))]
 
 
-def release(point):
-    return [mouse("mouseReleased", point, click_count=1)]
+def move(action, frame):
+    """The pointer moves: hovering, or dragging with a button down (a slider's, a selection's)."""
+    return [mouse("mouseMoved", point_of(action, frame), button=choice(action, "button", ("none", *BUTTONS), "none"))]
 
 
-def scroll(point, direction):
-    """A wheel turn at the point the person last touched, so a scrolling box under it scrolls."""
-    if direction not in SCROLL_DIRECTIONS:
-        raise ValueError(f"no such scroll direction: {direction!r}")
-    return [mouse("mouseWheel", point, button="none", deltaX=0, deltaY=SCROLL_DIRECTIONS[direction] * SCROLL_STEP)]
+def wheel(action, frame):
+    """A wheel turn over the point, so the scrolling box under it scrolls."""
+    delta_x, delta_y = frame.css_pixels(*(number(action, axis, -MOST_TURN, MOST_TURN) for axis in ("dx", "dy")))
+    return [mouse("mouseWheel", point_of(action, frame), deltaX=delta_x, deltaY=delta_y)]
 
 
-def fractions(action):
-    """The action's point, each coordinate a fraction of the frame, kept within it."""
-    try:
-        return tuple(min(1.0, max(0.0, float(action[axis]))) for axis in ("x", "y"))
-    except (KeyError, TypeError, ValueError):
-        raise ValueError("a point needs x and y") from None
+def point_of(action, frame):
+    """The action's point, in the page's CSS pixels: x and y are fractions of the frame, kept within it."""
+    return frame.css_pixels(*(number(action, axis, 0, 1) for axis in ("x", "y")))
 
 
-def mouse(event_type, point, button="left", click_count=0, **wheel):
+def clicking(action):
+    """A press's or release's button, which click of a double or triple click it is, and the keys held."""
+    return {"button": choice(action, "button", BUTTONS, "left"),
+            "clickCount": round(number(action, "clicks", 1, MOST_CLICKS, default=1)), "modifiers": modifiers(action)}
+
+
+def mouse(event_type, point, **fields):
+    """A mouse event at point, with no button down and no keys held unless fields say so."""
     x, y = point
-    return {"type": "input_mouse", "eventType": event_type, "x": x, "y": y, "button": button,
-            "clickCount": click_count, "modifiers": 0, **wheel}
+    return {"type": "input_mouse", "eventType": event_type, "x": x, "y": y,
+            "button": "none", "clickCount": 0, "modifiers": 0, **fields}
+
+
+def number(action, name, low, high, default=None):
+    """action[name], or default if it has none, as a number kept within low and high."""
+    try:
+        value = float(action.get(name, default))
+    except (TypeError, ValueError):
+        raise ValueError(f"{name}: a number") from None
+    return min(high, max(low, value))
+
+
+def choice(action, name, choices, default):
+    value = action.get(name, default)
+    if value not in choices:
+        raise ValueError(f"no such {name}: {value!r}")
+    return value
+
+
+def modifiers(action):
+    value = action.get("modifiers", 0)
+    if value not in MODIFIERS:
+        raise ValueError(f"no such modifiers: {value!r}")
+    return int(value)
 
 
 def typed(text):
     """Each character as a key going down, which types it, and up again."""
     if not isinstance(text, str) or not text or len(text) > TEXT_MAX:
         raise ValueError(f"text to type: 1 to {TEXT_MAX} characters")
-    return [event for character in text for event in character_press(character)]
+    return [event for character in text for event in character_key(character).events()]
 
 
-def character_press(character):
+def character_key(character):
     if character in KEY_FOR_CHARACTER:
-        return key_press(KEY_FOR_CHARACTER[character])
-    return key_events(character, "", character, character_key_code(character))
+        return named_key(KEY_FOR_CHARACTER[character])
+    return Key(character, "", character, character_key_code(character))
 
 
 def character_key_code(character):
@@ -84,13 +144,14 @@ def character_key_code(character):
     return ord(character.upper()) if character.isascii() and character.isalnum() else 0
 
 
-def key_press(key):
-    if key not in KEY_CODES:
-        raise ValueError(f"no button for the key {key!r}")
-    return key_events(key, key, TYPED_BY_KEY.get(key, ""), KEY_CODES[key])
+def pressed_key(name):
+    """A key pressed for itself: one of KEY_CODES, or a letter, which types nothing (a shortcut's)."""
+    if isinstance(name, str) and name in KEY_CODES:
+        return named_key(name)
+    if isinstance(name, str) and len(name) == 1 and name.isascii() and name.isalpha():
+        return Key(name, f"Key{name.upper()}", "", ord(name.upper()))
+    raise ValueError(f"no such key: {name!r}")
 
 
-def key_events(key, code, typed_text, key_code):
-    """A key going down, which types typed_text, and up again."""
-    fields = {"type": "input_keyboard", "key": key, "code": code, "windowsVirtualKeyCode": key_code, "modifiers": 0}
-    return [{**fields, "eventType": "keyDown", "text": typed_text}, {**fields, "eventType": "keyUp", "text": ""}]
+def named_key(name):
+    return Key(name, name, TYPED_BY_KEY.get(name, ""), KEY_CODES[name])

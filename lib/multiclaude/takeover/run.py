@@ -1,6 +1,7 @@
 """The take-over: the page served through the tunnel and its link sent, until the person taps Done
 or I can't do it, the time runs out, the browser closes, or the command is stopped. Then the
-tunnel and the page go, and the command says how it ended, in a line on stdout and its exit status."""
+tunnel and the page go, the browser's viewport is put back, and the command says how it ended, in
+a line on stdout and its exit status."""
 import argparse
 import contextlib
 import fcntl
@@ -10,13 +11,16 @@ import signal
 import sys
 import threading
 import time
+from dataclasses import dataclass
 
 from multiclaude import paths
-from multiclaude.takeover.browser import NoBrowser, stream_port
+from multiclaude.log import log
+from multiclaude.takeover.browser import NoBrowser, Session
 from multiclaude.takeover.notice import PrintedLink, TelegramLink
 from multiclaude.takeover.page import PageServer, page_html
 from multiclaude.takeover.stream import Stream
 from multiclaude.takeover.tunnel import Tunnel, TunnelError
+from multiclaude.takeover.viewport import Fitting
 from multiclaude.telegram import TelegramError
 from multiclaude.websocket import WebSocketClosed
 
@@ -43,6 +47,23 @@ class Stopped(Exception):
     """The command was told to stop (STOP_SIGNALS)."""
 
 
+@dataclass(frozen=True)
+class Browser:
+    """The browser taken over: its stream (frames in, input out) and its viewport."""
+    stream: Stream
+    viewport: Fitting
+
+    def hand_back(self):
+        """Put the viewport back as it was and let go of the stream. A browser that has closed is
+        left alone, since any agent-browser command for its session would start it again."""
+        if not self.stream.closed:
+            try:
+                self.viewport.restore()
+            except NoBrowser as e:
+                log(f"takeover: couldn't put the viewport back: {e}")
+        self.stream.close()
+
+
 class Ending:
     """How a take-over ends, decided once: by the page (Done, I can't do it), the clock, the
     browser or a stop."""
@@ -67,16 +88,16 @@ class Ending:
 
 
 class TakeOver:
-    def __init__(self, stream, tunnel, notice, seconds):
-        """stream: the browser's Stream; tunnel: opens the way in (Tunnel); notice: sends the link
-        and says how it ended (TelegramLink, PrintedLink); seconds: how long the link works."""
-        self.stream, self.tunnel, self.notice, self.seconds = stream, tunnel, notice, seconds
+    def __init__(self, browser, tunnel, notice, seconds):
+        """browser: the Browser taken over; tunnel: opens the way in (Tunnel); notice: sends the
+        link and says how it ended (TelegramLink, PrintedLink); seconds: how long the link works."""
+        self.browser, self.tunnel, self.notice, self.seconds = browser, tunnel, notice, seconds
         self.ending = Ending()
 
     def run(self, task):
         """Hand the browser over until the take-over ends; how it ended."""
         token = secrets.token_urlsafe(TOKEN_BYTES)
-        server = PageServer(token, self.stream, self.ending, page_html(task, time.time() + self.seconds))
+        server = PageServer(token, self.browser, self.ending, page_html(task, time.time() + self.seconds))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
             address = self.tunnel.open(server.port)
@@ -86,7 +107,7 @@ class TakeOver:
             self.tunnel.close()
             server.shutdown()
             server.server_close()
-            self.stream.close()
+            self.browser.hand_back()
         self.notice.close(outcome)
         return outcome
 
@@ -94,7 +115,7 @@ class TakeOver:
         deadline = time.monotonic() + self.seconds
         try:
             while not self.ending.wait(CHECK_EVERY):
-                if self.stream.closed:
+                if self.browser.stream.closed:
                     self.ending.finish(CLOSED)
                 elif time.monotonic() >= deadline:
                     self.ending.finish(EXPIRED)
@@ -122,10 +143,11 @@ def main(argv):
         signal.signal(signum, stop)
     try:
         notice = PrintedLink() if options.print_link else TelegramLink(chat_for(options), options.task, options.minutes)
-        port = stream_port(options.session, options.home)
+        session = Session(options.session, options.home)
+        port = session.stream_port()
         with only_take_over(port):
-            stream = Stream.connect(port)
-            outcome = TakeOver(stream, Tunnel(), notice, options.minutes * 60).run(options.task)
+            browser = Browser(Stream.connect(port), Fitting(session))
+            outcome = TakeOver(browser, Tunnel(), notice, options.minutes * 60).run(options.task)
     except (Busy, Stopped, NoBrowser, TunnelError, TelegramError, WebSocketClosed, OSError) as e:
         print(f"takeover: {e}", file=sys.stderr)
         return FAILED

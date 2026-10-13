@@ -1,36 +1,66 @@
 """The agent-browser session being taken over. Every session runs a WebSocket stream server on
 127.0.0.1 that sends what its page shows and takes mouse and keyboard input; `agent-browser
-stream status` names its port, and `stream enable` turns it back on if it was turned off."""
+stream status` names its port, and `stream enable` turns it back on if it was turned off. Its
+viewport is read with `eval` and set with `set viewport W H SCALE`."""
 import json
 import os
 import subprocess
+from dataclasses import dataclass
 
 AGENT_BROWSER = "agent-browser"
 CLI_TIMEOUT = 30  # seconds for one agent-browser command
+VIEWPORT_SCRIPT = "[innerWidth, innerHeight, devicePixelRatio]"
 
 
 class NoBrowser(Exception):
     """The session isn't running, has no browser open, or its stream can't be reached."""
 
 
-def stream_port(session, home=None):
-    """The port of session's stream server, turning streaming on if it's off. home: the HOME
-    the session was started with, for one a plugin runs under its own (its sockets are there)."""
-    if session not in call(["session", "list"], home).get("sessions", []):
-        raise NoBrowser(f"no agent-browser session {session!r} is running here (`agent-browser session list`)")
-    status = call(["--session", session, "stream", "status"], home)
-    if not status.get("enabled") or not status.get("port"):
-        status = call(["--session", session, "stream", "enable"], home)
-    if not status.get("connected"):
-        raise NoBrowser(f"agent-browser session {session!r} has no browser open")
-    if not status.get("port"):
-        raise NoBrowser(f"agent-browser session {session!r} has no stream server")
-    return int(status["port"])
+@dataclass(frozen=True)
+class Viewport:
+    width: int    # CSS pixels
+    height: int
+    scale: float  # device pixels per CSS pixel
+
+
+class Session:
+    def __init__(self, name, home=None):
+        """name: the session (agent-browser --session NAME); home: the HOME it was started with,
+        for one a plugin runs under its own (its sockets are there)."""
+        self.name, self.home = name, home
+
+    def stream_port(self):
+        """The port of the session's stream server, turning streaming on if it's off."""
+        if self.name not in call(["session", "list"], self.home).get("sessions", []):
+            raise NoBrowser(f"no agent-browser session {self.name!r} is running here (`agent-browser session list`)")
+        status = self.call("stream", "status")
+        if not status.get("enabled") or not status.get("port"):
+            status = self.call("stream", "enable")
+        if not status.get("connected"):
+            raise NoBrowser(f"agent-browser session {self.name!r} has no browser open")
+        if not status.get("port"):
+            raise NoBrowser(f"agent-browser session {self.name!r} has no stream server")
+        return int(status["port"])
+
+    def viewport(self):
+        """The viewport as the page sees it."""
+        result = self.call("eval", VIEWPORT_SCRIPT).get("result")
+        try:
+            width, height, scale = result
+            return Viewport(int(width), int(height), float(scale))
+        except (TypeError, ValueError):
+            raise NoBrowser(f"agent-browser session {self.name!r}: no viewport in {result!r}") from None
+
+    def set_viewport(self, viewport):
+        self.call("set", "viewport", str(viewport.width), str(viewport.height), f"{viewport.scale:g}")
+
+    def call(self, *args):
+        """A command for this session. One for a session that isn't running starts it."""
+        return call(["--session", self.name, *args], self.home)
 
 
 def call(args, home=None):
-    """Run an agent-browser command with --json; the data of its reply. A command for a session
-    that isn't running starts one, so ask `session list` first."""
+    """Run an agent-browser command with --json; the data of its reply."""
     env = {**os.environ, "HOME": home} if home else None
     command = " ".join(args)
     try:
