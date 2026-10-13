@@ -604,3 +604,37 @@ def tap(panel, action, chat=ALICE_CHAT, **args):
 
 def last_snapshot(r):
     return r.pushed[-1][2]
+
+
+# --- the machine's health (test_health.py, test_assistant_cli.py) ---
+
+class FakeProc:
+    """A /proc of our own: the machine's files, and a folder for each process."""
+
+    PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
+    MB = 1024 * 1024
+
+    def __init__(self, root):
+        self.root = root
+        root.mkdir()
+
+    def machine(self, total_mb=8192, available_mb=4096, swap_mb=0, swap_free_mb=0, busy=0, idle=1000):
+        (self.root / "stat").write_text(f"cpu  {busy} 0 0 {idle} 0 0 0 0 0 0\ncpu0 {busy} 0 0 {idle} 0 0 0 0 0 0\n")
+        (self.root / "meminfo").write_text(f"MemTotal: {total_mb * 1024} kB\nMemFree: 1000 kB\n"
+                                           f"MemAvailable: {available_mb * 1024} kB\nSwapTotal: {swap_mb * 1024} kB\n"
+                                           f"SwapFree: {swap_free_mb * 1024} kB\n")
+        (self.root / "loadavg").write_text("0.52 0.40 0.35 2/300 4000\n")
+        (self.root / "uptime").write_text("47663.03 274092.79\n")
+
+    def process(self, pid, name, mb, *args, ppid=1, cwd=None, pss_mb=None):
+        """A process holding mb resident; with pss_mb, the kernel tells its proportional share too."""
+        folder = self.root / str(pid)
+        folder.mkdir()
+        (folder / "stat").write_text(f"{pid} ({name}) S {ppid} {pid} {pid} 0 -1 4194304 0 0\n")
+        (folder / "statm").write_text(f"9999 {round(mb * self.MB / self.PAGE_SIZE)} 100 5 0 123 0\n")
+        (folder / "cmdline").write_bytes(b"".join(arg.encode() + b"\0" for arg in args))
+        if cwd:
+            os.symlink(cwd, folder / "cwd")
+        if pss_mb is not None:
+            (folder / "smaps_rollup").write_text(f"00400000-7fff00000000 ---p 00000000 00:00 0  [rollup]\n"
+                                                 f"Rss: {mb * 1024} kB\nPss: {round(pss_mb * 1024)} kB\n")

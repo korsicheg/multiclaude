@@ -11,6 +11,7 @@ WORKSPACES = Path(os.environ.get("ASSISTANT_WORKSPACES") or HOME / "workspaces")
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude")
 CLAUDE_JSON = Path(os.environ.get("CLAUDE_JSON") or HOME / ".claude.json")
 TELEGRAM_DIR = Path(os.environ.get("TELEGRAM_STATE_DIR") or CLAUDE_DIR / "channels" / "telegram")
+PROC = Path(os.environ.get("ASSISTANT_PROC") or "/proc")  # the kernel's view of the machine (health/machine.py)
 
 # The native installer points this link at the newest Claude Code version.
 CLAUDE_LINK = HOME / ".local" / "bin" / "claude"
@@ -33,6 +34,9 @@ SETTINGS_LOCK = STATE / "shared.lock"
 JOB_RUNS = STATE / "job-runs"
 # A lock per browser being taken over, <its stream port>.lock: one take-over of a browser at a time.
 TAKEOVERS = STATE / "takeovers"
+# The machine's health, written by `assistant health sample` (health/): the latest sample, a week of
+# them, and where each alert stands.
+HEALTH = STATE / "health"
 
 PROJECTS = CLAUDE_DIR / "projects"
 USER_SETTINGS = CLAUDE_DIR / "settings.json"

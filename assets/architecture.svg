@@ -154,10 +154,11 @@
     <text x="1165" y="528">~/workspaces/&lt;name&gt;</text>
   </g>
   <g class="box">
-    <rect class="program" x="1060" y="570" width="210" height="80" rx="10"/>
+    <rect class="program" x="1060" y="570" width="210" height="97" rx="10"/>
     <text class="name" x="1165" y="596">Cron</text>
     <text x="1165" y="616">scheduled jobs: a one-shot</text>
-    <text x="1165" y="633">Claude in a person's folder</text>
+    <text x="1165" y="633">Claude in a person's folder;</text>
+    <text x="1165" y="650">health checks warn the owner</text>
   </g>
   <g class="box">
     <rect class="program" x="1330" y="160" width="130" height="100" rx="10"/>

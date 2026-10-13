@@ -41,13 +41,21 @@ def read_object(path):
 def write_json(path, data):
     """Write atomically, keeping the file's permissions: readers see the old file or the new
     one, never half of one."""
+    write_atomically(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
+def write_lines(path, records):
+    """Write each record as a line of JSON (JSON Lines), atomically like write_json."""
+    write_atomically(path, "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records))
+
+
+def write_atomically(path, text):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     with open(tmp, "w") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+        f.write(text)
     os.chmod(tmp, mode)
     os.replace(tmp, path)
 

@@ -1,9 +1,9 @@
-// How the control panel's page words times, money and the job runs of its Activity
+// How the control panel's page words times, money, sizes and the job runs of its Activity
 // (public/app/format.js).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { duration, moment, money, outcomeOf, runFacts, tallyText } from "../public/app/format.js";
+import { duration, moment, money, outcomeOf, runFacts, size, tallyText } from "../public/app/format.js";
 
 const NOW = Date.UTC(2026, 9, 13, 12, 0);  // Tue 13 Oct 2026, 15:00 in Athens
 const at = (utc) => Date.parse(utc) / 1000;
@@ -48,4 +48,12 @@ test("a duration reads in minutes, hours and days", () => {
   assert.equal(duration(240), "4 min");
   assert.equal(duration(3 * 3600 + 600), "3 h 10 min");
   assert.equal(duration(26 * 3600), "1 d 2 h");
+});
+
+test("a size reads in MB, then in GB with one decimal while it has one, as the VM's alerts say it", () => {
+  assert.equal(size(513.4), "513 MB");
+  assert.equal(size(1500), "1.5 GB");
+  assert.equal(size(8192), "8 GB");
+  assert.equal(size(98_100), "95.8 GB");
+  assert.equal(size(102_400), "100 GB");
 });

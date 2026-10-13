@@ -13,6 +13,7 @@ Each person gets their own Claude Code session, folder (`~/workspaces/<name>`), 
 - **Assistants:** one tmux session per person (`u-<name>`), started by `bin/run-user.sh`, in that person's folder. Each replies through `bin/tg`, which calls the Telegram Bot API.
 - **Scheduled jobs:** cron lines the assistants write, each running `assistant job`: a one-shot Claude in a person's folder whose answer is sent to them.
 - **Shared plugins and skills:** each person installs their own; `assistant shared sync` moves what everyone has into `~/.claude`, so there's one copy to keep up to date.
+- **Machine health:** every 5 minutes, `assistant health sample` checks CPU, memory, swap, disks, the router and each person's assistant. The owner gets a Telegram message when something runs high or stops, and again when it's fine, and sees the machine in the control panel.
 - **Browser take-overs:** when an assistant's browser hits something only its person can do (a CAPTCHA, a payment confirmation), `bin/takeover` sends them a private link to that browser, live, through a Cloudflare quick tunnel. They tap and type into it on their phone, tap Done, and the assistant carries on.
 - **Relay and control panel** (optional): a Cloudflare Worker in `relay/` that serves the control panel, a Telegram Mini App, and holds its taps until the router collects them. Add-ins that bring other apps (Slack, Siri) come in through it too.
 
@@ -124,7 +125,7 @@ It links `assistant`, `tg`, `takeover` and `claude-usage` into `~/.local/bin` (m
 - writes the assistants' rules to `~/workspaces/.claude/CLAUDE.md`, from `system/workspaces-CLAUDE.md` and the rules of each add-in that is on. Claude Code loads a parent folder's `.claude/CLAUDE.md`, so every assistant reads it, and the front desk never does.
 - installs the Telegram plugin for the repo's folder only (its `.claude/settings.json` enables it there).
 - installs the two systemd units, `assistant` and `assistant-watcher`.
-- adds a cron line that runs `assistant shared sync` every 10 minutes.
+- adds two cron lines: `assistant shared sync` every 10 minutes, and `assistant health sample` every 5 (see [Machine health](#machine-health)).
 
 **3. Token and login.**
 
@@ -140,7 +141,7 @@ It asks for the bot token and saves it in `~/.claude/channels/telegram/.env`, an
 assistant pair <code> <name> "Display Name"     # e.g. assistant pair a1b2c3 ada "Ada"
 ```
 
-This approves you and switches the bot to allowlist mode, so strangers get no reply. It also creates `~/workspaces/<name>` with its own short, personal `CLAUDE.md` (from `templates/CLAUDE.md.tmpl`), starts your assistant, and sends you a welcome message. The first person added becomes the owner: the default target for `assistant notify` and `assistant job`, and the one told about updates and outages.
+This approves you and switches the bot to allowlist mode, so strangers get no reply. It also creates `~/workspaces/<name>` with its own short, personal `CLAUDE.md` (from `templates/CLAUDE.md.tmpl`), starts your assistant, and sends you a welcome message. The first person added becomes the owner: the default target for `assistant notify` and `assistant job`, and the one told about updates, outages and the machine's health.
 
 **5. Check.**
 
@@ -162,7 +163,7 @@ The login is kept in `~/.config/claude-usage/credentials.json` and refreshes by 
 
 ### The control panel and the relay
 
-`/config` opens the control panel, a Telegram Mini App where each person sees their usage and what their scheduled jobs did, and changes their model, effort, name, timezone, scheduled jobs and MCP servers. It is served by the relay, a Cloudflare Worker on the free plan, which also holds the panel's taps until the router collects them, so nothing is lost while the machine is offline. The router connects out to it, so nothing on the machine is reachable from the internet.
+`/config` opens the control panel, a Telegram Mini App where each person sees their usage and what their scheduled jobs did, and changes their model, effort, name, timezone, scheduled jobs and MCP servers. The owner also sees the machine's health there. It is served by the relay, a Cloudflare Worker on the free plan, which also holds the panel's taps until the router collects them, so nothing is lost while the machine is offline. The router connects out to it, so nothing on the machine is reachable from the internet.
 
 1. In Cloudflare, create an API token from the **Edit Cloudflare Workers** template, and note your account id.
 2. Save them, readable only by you:
@@ -225,7 +226,7 @@ A person's entry in `users.json` can also hold `"timezone"` (an IANA name such a
 | `/mcp`, `/mcp add …`, `/mcp login name`, `/mcp remove name` … | Your MCP servers, with Claude Code's syntax (`/mcp help` lists it all). Never shared: each person connects their own accounts. `/mcp login` sends a sign-in link and takes the address your browser lands on. |
 | `/reload-plugins`, `/reload-plugins --force` | Reloads your assistant's plugins, skills and MCP servers once it's idle. A reload that changes MCP tools costs the prompt cache, so Claude Code holds it back until it comes with `--force`. Not in Telegram's command menu, which takes no hyphens. |
 | `/help` | What you can send the bot, the other ways you can reach it, and these commands. Then your assistant sends what it can do with your MCP servers. |
-| `/config` | A button that opens the control panel (so does the **Panel** button by the message box): model and effort, context and plan limits, your scheduled jobs (pause, resume, delete) and what they did (each run's outcome, cost and the start of its answer, with today's and the week's totals), your MCP servers (reconnect, sign in, turn off), your plugins and skills (on or off, as `/plugin enable|disable` and `/skills on|off`), and your name and timezone. It needs the relay. |
+| `/config` | A button that opens the control panel (so does the **Panel** button by the message box): model and effort, context and plan limits, your scheduled jobs (pause, resume, delete) and what they did (each run's outcome, cost and the start of its answer, with today's and the week's totals), your MCP servers (reconnect, sign in, turn off), your plugins and skills (on or off, as `/plugin enable|disable` and `/skills on|off`), and your name and timezone. The owner also sees the machine: CPU, memory, swap and disks with their last 24 hours, the alerts standing, the router and each assistant, and the programs using the most memory. It needs the relay. |
 
 With `default`, `/model` and `/effort` write `model` or `effortLevel` into that person's `~/workspaces/<name>/.claude/settings.json`, which wins over the shared `~/.claude/settings.json`; the shared file is never changed. `max` effort can only be set for one session, because Claude Code doesn't save it.
 
@@ -252,6 +253,35 @@ The person gets a Telegram message with what to do and an **Open the browser** b
 
 It needs `cloudflared`, which `assistant install` adds, and no Cloudflare account: each take-over opens a [quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/), a random `trycloudflare.com` address that lasts only while it runs. The page shows whatever that browser shows, payment pages included, so every address is under a long random token, the page is only served over HTTPS, nothing about it is logged, and one browser is taken over by one person at a time. To try it on the machine without Telegram, `--print-link` prints the link instead of sending it. `--home` finds a session a plugin runs with its own `HOME`.
 
+## Machine health
+
+Cron runs `assistant health sample` every 5 minutes (`assistant install` adds the line). Each sample reads how busy the CPU was since the last one, the load, memory and swap used, each disk, the uptime, the five programs using the most memory, whether the router is running and whether each person's assistant is. A week of samples is kept in `~/assistant/state/health/`.
+
+The owner gets a Telegram message when one of these goes wrong, and again when it's fine, never in between. The message has the numbers, and for CPU and memory the programs using the most memory, named by whose they are (`claude (ada)`, `Chrome, 34 processes`). The defaults:
+
+| What | Alerts | Fine again |
+| --- | --- | --- |
+| CPU busy | 90% or more for 3 samples in a row (15 minutes) | under 70% |
+| Memory used (what isn't available) | 90% or more for 3 samples | under 80% |
+| Swap used | 50% or more for 3 samples | under 40% |
+| A disk (`/`, and the repo's or the workspaces' if elsewhere) | 85% full, and again at 95% | under 80% |
+| The router (`assistant-watcher`) | not running, at once | running |
+| A person's assistant | no Claude Code in its tmux session for 2 samples | running |
+
+The gap between the two numbers keeps a value hovering at the line from sending a message every 5 minutes. To change any of them, add a `"health"` section to `~/assistant/config.json` with only what you change; the next sample uses it:
+
+```json
+{"health": {"ram": {"at": 95, "clear": 85, "samples": 2}, "disk": {"at": 80, "critical": 90, "critical_clear": 85}}}
+```
+
+The keys are `cpu`, `ram`, `swap` and `disk` (`at`, `clear`, `samples`, and for disks `critical`, `critical_clear`), `router` and `assistant` (`samples`). The alerts go out like `assistant notify`, straight through Telegram's Bot API, so the owner still hears when the router is what's down. A machine that's off can't say so: then the samples stop, and the control panel's Machine section says how old the last one is.
+
+In the control panel, the owner sees the machine with bars for CPU, memory, swap and each disk, a sparkline of the last 24 hours under CPU, memory and the fullest disk (touch it to read a time), the alerts standing, the router and each assistant, the uptime, and the programs using the most memory. On the machine:
+
+```sh
+assistant health                # the machine now, the alerts standing and the last day's highs
+```
+
 ## Day to day
 
 ```sh
@@ -262,6 +292,7 @@ assistant start|stop|restart    # front desk, every assistant and the router
 assistant start-users           # start any person's assistant that isn't running
 assistant notify [--user <name>] "text"         # a Telegram message to one person (default: the owner)
 assistant job [--user <name>] [--model <m>] [--deny <tools>] "instructions"   # a one-shot task whose answer goes to that person
+assistant health                # the machine now: CPU, memory, swap, disks, the router and each assistant
 assistant shared list           # plugins, skills and marketplaces: shared and per person
 assistant shared sync [--dry-run] [--wait]
 assistant relay deploy          # deploy the relay: the control panel, and the add-ins' routes
@@ -270,7 +301,7 @@ assistant addon list|enable|disable
 
 `assistant restart` stops every tmux session, so everyone's assistant restarts (each resumes its conversation). For a router change, restart only the router: `sudo systemctl restart assistant-watcher`. It routes the messages that arrived while it was down.
 
-- **Logs:** the router logs to `journalctl -u assistant-watcher`. Jobs log to `~/assistant/logs/jobs.log` (errors in `jobs.err`), and each run's outcome, cost and the start of its answer to `state/job-runs/<name>.jsonl` (each person's last 200, shown in the control panel's Activity); the shared sync logs to `logs/shared.log`.
+- **Logs:** the router logs to `journalctl -u assistant-watcher`. Jobs log to `~/assistant/logs/jobs.log` (errors in `jobs.err`), and each run's outcome, cost and the start of its answer to `state/job-runs/<name>.jsonl` (each person's last 200, shown in the control panel's Activity); the shared sync logs to `logs/shared.log`, and the health samples to `logs/health.log` (only the alerts they sent, and errors).
 - **Scheduled jobs:** each assistant adds its own cron lines (`assistant job --user <name> "…"`), each under a `# <name>:` comment and listed in that person's `~/workspaces/<name>/jobs.md`. `assistant job` runs `claude -p` in the person's folder, at most one run of the same job at a time and for up to an hour, and sends its final answer unless that is exactly `NOTHING`, which makes "only tell me if…" jobs possible. `--model` runs a job on another model than the person's saved one, and `--deny` forbids tools outright (sending mail, say).
 - **Plugins, skills and marketplaces:** each assistant installs them only in its person's own `~/workspaces/<name>/.claude/`. Once everyone has the same one, `assistant shared sync` moves it to `~/.claude` and deletes the copies. If someone turns a shared one off for themselves, it moves back into everyone else's folder. When you add a person, everything shared moves back into the folders of the people who had it, so the newcomer starts with none of it. The owner gets a message for each move. The bot's `/plugin` and `/mcp` commands run with the `env` from the person's own `.claude/settings.json`, so a login kept there, such as their own GitHub login for a private marketplace, works for them too.
 
@@ -282,7 +313,7 @@ These files hold secrets or per-person data, and `.gitignore` keeps them out. Ba
 - `~/assistant/config.json`: the bot's name and the add-ins that are on
 - `~/.claude/channels/telegram/`: the bot token (`.env`) and the access allowlist (`access.json`)
 - `~/assistant/users.json`: people, their Telegram ids, roles and timezones, and the add-ins' fields
-- `~/assistant/state/`: secrets (`cloudflare.json`, `relay.json`, and the add-ins' own) and the router's state (message ids for `/clear`, held messages, open questions, what was shared)
+- `~/assistant/state/`: secrets (`cloudflare.json`, `relay.json`, and the add-ins' own), the router's state (message ids for `/clear`, held messages, open questions, what was shared) and a week of the machine's health
 - `~/workspaces/<name>/` (including its `.claude/settings.json`) and `~/.claude/projects/-home-<user>-workspaces-<name>/`: each person's files, memory and chat history
 - `~/.claude.json`: among much else, each person's own MCP servers (local scope)
 - The crontab (`crontab -l`): everyone's scheduled jobs
@@ -296,7 +327,7 @@ To restore on a new machine, follow the setup above, put these back, and run `as
 cd ~/assistant && git pull && assistant install
 ```
 
-`assistant install` copies the systemd units and the assistants' rules again; everything else is linked into the repo and follows it. Then restart what changed: `sudo systemctl restart assistant-watcher` for the router, `assistant restart` for everything, and `assistant relay deploy` after a change in `relay/`.
+`assistant install` copies the systemd units and the assistants' rules again, and adds any cron line of its own that's missing; everything else is linked into the repo and follows it. Then restart what changed: `sudo systemctl restart assistant-watcher` for the router, `assistant restart` for everything, and `assistant relay deploy` after a change in `relay/`.
 
 ## Development
 

@@ -1,8 +1,10 @@
 /*
- * How the control panel puts times, money and the job runs of its Activity into words. app.js draws
- * the page with them; they're kept apart from it so the relay's tests check them (test/format.test.js).
+ * How the control panel puts times, money, sizes and the job runs of its Activity into words. app.js
+ * draws the page with them; they're kept apart from it so the relay's tests check them
+ * (test/format.test.js).
  */
 const DAY = 864e5;  // ms
+const MB_PER_GB = 1024;
 
 /* What each outcome of a job run is called, and the colour of its dot (app.css). */
 const OUTCOMES = {
@@ -32,6 +34,13 @@ export function tallyText({ runs, failed, cost }) {
 
 export function money(usd) {
   return usd > 0 && usd < 0.01 ? "<$0.01" : `$${usd.toFixed(2)}`;
+}
+
+/* 513 MB, 4.1 GB, 8 GB, 96 GB, as the VM words them in its alerts (lib/multiclaude/health/words.py). */
+export function size(mb) {
+  if (mb < 1000) return `${Math.round(mb)} MB`;
+  const gb = mb / MB_PER_GB;
+  return gb < 100 ? `${gb.toFixed(1).replace(/\.0$/, "")} GB` : `${Math.round(gb)} GB`;
 }
 
 export function duration(seconds) {

@@ -62,7 +62,8 @@ render_claude_md() {
 
 # Set this machine up for the user running it: the commands on the PATH, Claude Code's managed
 # settings, uv and cloudflared, the status line, the assistants' rules, the Telegram plugin, the
-# services and the shared-sync cron line. Safe to run again, after an update say.
+# services, and the cron lines for the shared sync and the health samples. Safe to run again, after
+# an update say.
 cmd_install() {
   check_programs
   mkdir -p "$HOME/.local/bin" "$HOME/workspaces" "$ROOT/logs"
@@ -75,6 +76,7 @@ cmd_install() {
   install_telegram_plugin
   install_services
   install_shared_sync
+  install_health_samples
   echo "Installed for $(id -un). Next: assistant setup"
 }
 
@@ -172,10 +174,21 @@ install_services() {
 
 # Every 10 minutes, `assistant shared sync` moves what every person has into ~/.claude (README).
 install_shared_sync() {
-  local line="3-59/10 * * * * $ROOT/bin/assistant shared sync >> $ROOT/logs/shared.log 2>&1"
-  crontab -l 2>/dev/null | grep -qF "$ROOT/bin/assistant shared sync" && return
-  { crontab -l 2>/dev/null || true; echo "# assistant: shared plugins, skills and marketplaces, every 10 minutes"; echo "$line"; } |
-    crontab -
+  add_cron_line "shared plugins, skills and marketplaces, every 10 minutes" "3-59/10 * * * *" "shared sync" shared.log
+}
+
+# Every 5 minutes, `assistant health sample` reads the machine and tells the owner when something runs
+# high or stops (README, "Machine health").
+install_health_samples() {
+  add_cron_line "the machine's health, every 5 minutes" "*/5 * * * *" "health sample" health.log
+}
+
+# add_cron_line PURPOSE SCHEDULE COMMAND LOG: run `assistant COMMAND` from cron, logging to logs/LOG,
+# under a "# assistant: PURPOSE" comment, unless a line already runs it.
+add_cron_line() {
+  local purpose=$1 schedule=$2 command="$ROOT/bin/assistant $3" log="$ROOT/logs/$4"
+  crontab -l 2>/dev/null | grep -qF "$command" && return
+  { crontab -l 2>/dev/null || true; echo "# assistant: $purpose"; echo "$schedule $command >> $log 2>&1"; } | crontab -
 }
 
 cmd_setup() {
@@ -715,6 +728,10 @@ assistant shared sync [--dry-run] [--wait]
                                 someone new joins (cron runs it every 10 minutes; --wait
                                 waits for a sync already running instead of skipping)
 assistant shared list           What's shared and what each user has in their own folder
+assistant health [status]       The machine now: CPU, memory, swap, disks, the router and each
+                                assistant, the alerts standing and the last day's highs
+assistant health sample         Keep a sample of the machine and tell the owner what changed
+                                (cron runs it every 5 minutes)
 assistant relay deploy          Deploy the relay (the control panel, and the routes of the add-ins
                                 that are on) to Cloudflare and point the router at it
 assistant addon list            The add-ins, on or off; assistant addon enable|disable <name>
@@ -739,6 +756,7 @@ case "${1:-help}" in
   notify)  shift; cmd_notify "$@" ;;
   reload-plugins) shift; cmd_reload_plugins "$@" ;;
   shared)  shift; exec python3 -I "$ROOT/bin/shared.py" "$@" ;;
+  health)  shift; exec python3 -I "$ROOT/bin/health.py" "$@" ;;
   relay)   shift; cmd_relay "$@" ;;
   addon)   shift; cmd_addon "$@" ;;
   help)    cmd_help ;;

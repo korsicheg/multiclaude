@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from conftest import ALICE_CHAT, BIN, FakeClaude
+from conftest import ALICE_CHAT, BIN, FakeClaude, FakeProc
 
 
 class Home:
@@ -382,6 +382,44 @@ def test_notify_succeeds_when_tg_holds_the_message_for_later(home, monkeypatch):
     assert len(list((home.root / "state" / "outbox" / ALICE_CHAT).glob("*.json"))) == 1
 
 
+# --- the machine's health -------------------------------------------------------------------------
+
+@pytest.fixture
+def machine(home, tmp_path):
+    """home with a /proc of its own, where Alice's assistant runs in its tmux session; disks never alert."""
+    proc = FakeProc(tmp_path / "proc")
+    proc.process(4243, "claude", 400, "claude", "--name", "alice", ppid=4242, cwd=str(home.home / "workspaces" / "alice"))
+    (home.fake.bin / "tmux").write_text("#!/bin/sh\necho 4242\n")  # the shell of each tmux session
+    (home.root / "config.json").write_text(json.dumps({"health": {"disk": {"at": 101, "critical": 101}}}))
+    home.health = lambda *args: home.run("health", *args, env={"ASSISTANT_PROC": str(proc.root)})
+    home.proc = proc
+    return home
+
+
+def test_a_health_sample_from_cron_tells_the_owner_once_when_memory_runs_low(machine):
+    machine.proc.machine(total_mb=8192, available_mb=410)
+    for _ in range(4):
+        r = machine.health("sample")
+        assert r.returncode == 0, r.stderr
+
+    assert len(machine.sent()) == 1
+    assert machine.sent()[0].startswith("⚠️ **Memory has been running low for 15 min**: 95% used, 410 MB of 8 GB available.")
+    assert "- claude (alice): 400 MB" in machine.sent()[0]
+    latest = json.loads((machine.root / "state" / "health" / "latest.json").read_text())
+    assert [alert["text"] for alert in latest["alerts"]] == ["Memory 95% used"]
+
+
+def test_health_prints_the_machine_now_with_the_alerts_at_the_last_sample(machine):
+    machine.proc.machine(total_mb=8192, available_mb=410)
+    machine.health("sample")
+    r = machine.health()
+
+    assert r.returncode == 0, r.stderr
+    assert "  Memory                   95%  7.6 GB of 8 GB used, 410 MB available" in r.stdout
+    assert "  Alice's assistant       running" in r.stdout
+    assert "Alerts at the last sample, 0 min ago: none" in r.stdout
+
+
 # --- install and setup ---------------------------------------------------------------------------
 
 def test_install_sets_the_machine_up_for_the_user_running_it(home):
@@ -403,6 +441,17 @@ def test_install_schedules_the_shared_sync_on_a_machine_with_no_crontab_yet(kept
 
     assert r.returncode == 0, r.stderr
     assert f"{kept_crontab.root}/bin/assistant shared sync" in crontab(kept_crontab)
+
+
+def test_install_schedules_the_health_samples_once(kept_crontab):
+    kept_crontab.run("install")
+    r = kept_crontab.run("install")
+
+    assert r.returncode == 0, r.stderr
+    root, lines = kept_crontab.root, crontab(kept_crontab).splitlines()
+    assert lines.count("# assistant: the machine's health, every 5 minutes") == 1
+    assert lines.count(f"*/5 * * * * {root}/bin/assistant health sample >> {root}/logs/health.log 2>&1") == 1
+    assert len(lines) == 4  # and the shared sync's comment and line, once
 
 
 def test_install_installs_uv_when_it_is_missing(home):

@@ -1,5 +1,6 @@
 """Tests for the control panel's VM side: router/panel.py, cronjobs.py and jobruns.py. The relay's
-side is tested in relay/test/panel.test.js, and how the page words things in relay/test/format.test.js."""
+side is tested in relay/test/panel.test.js, how the page words things in relay/test/format.test.js and
+its sparklines in relay/test/sparkline.test.js."""
 import json
 import time
 from datetime import datetime, timezone
@@ -7,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from conftest import ALICE_CHAT, CRONTAB, TOKEN, last_snapshot, read_json, signed, tap, write_json
+from conftest import ALICE_CHAT, BOB_CHAT, CRONTAB, TOKEN, last_snapshot, read_json, signed, tap, write_json
 
 PAUSED = "#⏸ "  # cronjobs.PAUSED
 
@@ -123,6 +124,49 @@ def test_the_router_looks_for_changes_every_half_minute(r, desk, panel):
     panel.tick(1010.0)
     panel.tick(1031.0)
     assert len(r.pushed) == 2  # alice and bob, once: the second look found nothing new
+
+
+# --- the machine, for the owner ---
+
+def keep_a_sample(when, cpu=12.0):
+    """A sample of the machine, kept as `assistant health sample` keeps it."""
+    from multiclaude.health import history
+    history.keep({"time": when, "uptime": 3600, "cpu": {"percent": cpu, "load": [0.5, 0.4, 0.3], "cores": 4},
+                  "memory": {"total_mb": 8192, "available_mb": 4096, "percent": 50.0},
+                  "swap": {"total_mb": 0, "used_mb": 0, "percent": 0.0},
+                  "disks": [{"mount": "/", "total_mb": 102_400, "used_mb": 40_960, "free_mb": 61_440, "percent": 40.0}],
+                  "top": [{"name": "Chrome", "mb": 1500, "count": 34}], "router": True,
+                  "sessions": [{"name": "alice", "display": "Alice", "running": True}], "ticks": [600, 2000],
+                  "alerts": [{"rule": "router", "level": "high", "since": when, "text": "The router is down"}]})
+
+
+def test_the_owner_sees_the_machine_and_no_one_else_does(r, panel):
+    keep_a_sample(time.time() - 60)
+
+    tap(panel, "refresh")
+    machine = last_snapshot(r)["machine"]
+    tap(panel, "refresh", chat=BOB_CHAT)
+
+    assert "ticks" not in machine["sample"]
+    assert (machine["sample"]["cpu"]["percent"], machine["sample"]["alerts"][0]["text"]) == (12.0, "The router is down")
+    assert len(machine["day"]["cpu"]) == 96 and machine["day"]["cpu"][-1] == 12 and machine["day"]["disk"][-1] == 40
+    assert machine["limits"] == {"cpu": 90, "ram": 90, "disk": 85}
+    assert "machine" not in last_snapshot(r)
+
+
+def test_before_the_first_sample_the_owner_sees_there_is_none(r, panel):
+    tap(panel, "refresh")
+    assert last_snapshot(r)["machine"] == {"sample": None}
+
+
+def test_the_machine_puts_the_owners_panel_again_only_with_a_new_sample(r, desk, panel):
+    alice, when = desk.users["alice"], time.time() - 60
+    keep_a_sample(when)
+    panel.update(alice)
+    panel.update(alice)
+    keep_a_sample(when + 300, cpu=40.0)
+    panel.update(alice)
+    assert [p["machine"]["sample"]["cpu"]["percent"] for _, _, p in r.pushed] == [12.0, 40.0]
 
 
 # --- what the jobs did ---

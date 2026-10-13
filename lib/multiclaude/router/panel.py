@@ -1,8 +1,8 @@
 """The control panel, /config: a Telegram Mini App, served by the relay, where a person sees their
 usage and what their scheduled jobs did, and changes their settings, scheduled jobs, MCP servers,
-plugins and skills with a tap. Taps come in as "panel" envelopes, checked against Telegram's
-signature; the router carries them out and puts each person's snapshot on the relay whenever it
-changes (fingerprint)."""
+plugins and skills with a tap; the owner also sees the machine's health. Taps come in as "panel"
+envelopes, checked against Telegram's signature; the router carries them out and puts each
+person's snapshot on the relay whenever it changes (fingerprint)."""
 import hashlib
 import hmac
 import json
@@ -17,6 +17,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from multiclaude import addons, bot, cronjobs, jobruns, jsonfile, paths, telegram
 from multiclaude import users as registry
 from multiclaude.channels import TelegramChat
+from multiclaude.health import alerts as health_alerts
+from multiclaude.health import history as health_history
 from multiclaude.log import log
 from multiclaude.router import claude_ui, plugins, relay_entrance, switching, usage, work
 from multiclaude.router.inbound import Inbound
@@ -162,6 +164,16 @@ def day_start(now, zone):
     except (ValueError, ZoneInfoNotFoundError):
         local = timezone.utc
     return datetime.fromtimestamp(now, local).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def machine_part():
+    """The machine's health, for the owner: the latest sample (without its CPU ticks) with the alerts
+    standing then, the day up to it for the sparklines, and where each charted share counts as high."""
+    sample = health_history.latest()
+    if not sample:
+        return {"sample": None}
+    return {"sample": {key: value for key, value in sample.items() if key != "ticks"},
+            "day": health_history.last_day(sample["time"]), "limits": health_alerts.limits(health_alerts.settings())}
 
 
 def fingerprint(snapshot):
@@ -394,7 +406,7 @@ class Panel:
             self.answers.setdefault(name, snapshot.get("answer"))
 
     def snapshot(self, user):
-        """What the page shows them."""
+        """What the page shows them, and the owner the machine's health too."""
         now = time.time()
         status = usage.snapshot(user) or {}
         checked, servers = self.servers.get(user.name, (None, []))
@@ -405,7 +417,8 @@ class Panel:
                 "usage": usage_part(status), "jobs": jobs_part(jobs, now),
                 "activity": activity_part(user.name, jobs, entry.timezone, now),
                 "mcp": {"checked": checked, "checking": user.name in self.checking, "servers": servers},
-                "plugins": inventory.plugins(person), "skills": inventory.skills(person)}
+                "plugins": inventory.plugins(person), "skills": inventory.skills(person),
+                **({"machine": machine_part()} if entry.role == "owner" else {})}
 
     def push(self, user, snapshot):
         """Put a snapshot on the relay, for the page to read. Whether it got there."""

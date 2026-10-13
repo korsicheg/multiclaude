@@ -4,7 +4,8 @@
  * (src/panel.js; the VM's side is lib/multiclaude/router/panel.py). Opening it is one read. After a
  * tap it reads again, and the relay holds that read until the VM puts the snapshot with the answer.
  */
-import { duration, moment, outcomeOf, runFacts, tallyText } from "./format.js";
+import { duration, moment, outcomeOf, runFacts, size, tallyText } from "./format.js";
+import { heightOf, peak, sparklinePath, stepAt, stepEnd } from "./sparkline.js";
 
 const tg = window.Telegram?.WebApp;
 
@@ -22,6 +23,10 @@ const DEFAULT_QUIET_HOURS = "00:00-09:00";
 const UNSIGNED_NOTICE = "Telegram didn't say who opened this page, so it can't show your settings. "
   + "Open it with the Panel button or /config in your chat with the bot.";
 const NAMELESS_BOT = "the bot";  // until the first snapshot says the bot's name
+const SAMPLE_STALE = 15 * 60;    // s: a machine sample this old means sampling, the router or the VM has stopped
+const SPARK_WIDTH = 300;         // the sparklines' own units: the SVG stretches to the row
+const SPARK_HEIGHT = 36;
+const SVG = "http://www.w3.org/2000/svg";
 const HALF_HOURS = Array.from({ length: 48 }, (_, i) => `${String(Math.floor(i / 2)).padStart(2, "0")}:${i % 2 ? "30" : "00"}`);
 
 let snapshot = null;
@@ -182,6 +187,7 @@ function render() {
   showStatus(statusLine());
   section("claude", "Claude", claudeRows(), switchingNote());
   section("usage", "Usage", usageRows(), "");
+  machineSections();
   section("jobs", "Scheduled jobs", jobRows(), jobsNote());
   if (snapshot.activity) section("activity", "Activity", activityRows(), activityNote());
   section("mcp", "MCP servers", serverRows(), serversNote());
@@ -306,6 +312,96 @@ function usageRows() {
   }
   if (!rows.length) rows.push(noteRow(`Nothing yet: it shows after ${botName()}'s next reply.`));
   return rows;
+}
+
+/* --- the machine, for the owner only: the VM's latest sample, its alerts and the last day --- */
+
+function machineSections() {
+  const machine = snapshot.machine;
+  if (machine) section("machine", "Machine", machineRows(machine), machineNote(machine.sample));
+  else document.getElementById("machine")?.remove();
+  if (machine?.sample) section("memory", "Using the most memory", memoryRows(machine.sample.top), memoryNote());
+  else document.getElementById("memory")?.remove();
+}
+
+function machineRows({ sample, day, limits }) {
+  if (!sample) return [noteRow("No samples yet: cron takes one every 5 minutes, once assistant install has added its line.")];
+  const { cpu, memory, swap, disks } = sample;
+  const fullest = disks.reduce((most, disk) => (disk.percent > most.percent ? disk : most), disks[0]);
+  const charted = (share) => ({ day, values: day[share], limit: limits[share] });
+  return [
+    ...sample.alerts.map(alertRow),
+    cpu.percent == null ? noteRow("CPU: measured from the next sample on.")
+      : chartedMeter("CPU", cpu.percent, `load ${cpu.load[0].toFixed(2)} · ${cpu.cores} cores`, charted("cpu")),
+    chartedMeter("Memory", memory.percent, `${size(memory.total_mb - memory.available_mb)} of ${size(memory.total_mb)}`,
+      charted("ram")),
+    swap.total_mb ? meter("Swap", swap.percent, `${size(swap.used_mb)} of ${size(swap.total_mb)}`) : null,
+    ...disks.map((disk) => chartedMeter(`Disk ${disk.mount}`, disk.percent, `${size(disk.free_mb)} free of ${size(disk.total_mb)}`,
+      disk === fullest ? charted("disk") : null)),
+    runningRow("Router", sample.router),
+    ...sample.sessions.map((session) => runningRow(`${session.display}'s assistant`, session.running)),
+    el("div", { className: "row" }, el("span", { className: "label" }, "Up for"),
+      el("span", { className: "value" }, duration(sample.uptime))),
+  ].filter(Boolean);
+}
+
+function alertRow(alert) {
+  return el("div", { className: "row" }, el("span", { className: `dot ${alert.level === "critical" ? "failed" : "warn"}` }),
+    el("span", { className: "label" }, alert.text,
+      el("span", { className: "sub" }, `since ${moment(alert.since, snapshot.person.timezone)}`)));
+}
+
+function runningRow(label, running) {
+  return el("div", { className: "row" }, el("span", { className: `dot ${running ? "ok" : "failed"}` }),
+    el("span", { className: "label" }, label), el("span", { className: "value" }, running ? "running" : "not running"));
+}
+
+/* A share's bar, and under it its last day when the VM charts it: {day, values, limit}. */
+function chartedMeter(label, percent, detail, chart) {
+  const row = meter(label, percent, detail);
+  if (chart) row.append(...sparkline(chart));
+  return row;
+}
+
+/* The day of a share as a line, with a dashed line where it counts as high, and under it its highest;
+ * a finger on it reads the share at that time instead. */
+function sparkline({ day, values, limit }) {
+  const highest = peak(values);
+  const summary = `Last 24 hours${highest == null ? "" : `, highest ${highest}%`}`;
+  const caption = el("span", { className: "sub spark-caption" }, summary);
+  const limitAt = heightOf(limit, SPARK_HEIGHT);
+  const chart = svgEl("svg", { class: "spark", viewBox: `0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`, preserveAspectRatio: "none",
+    role: "img", "aria-label": summary },
+  svgEl("line", { class: "limit", x1: 0, x2: SPARK_WIDTH, y1: limitAt, y2: limitAt }),
+  svgEl("path", { d: sparklinePath(values, SPARK_WIDTH, SPARK_HEIGHT) }));
+  const readAt = (event) => {
+    const box = chart.getBoundingClientRect();
+    const index = stepAt((event.clientX - box.left) / box.width, values.length);
+    const value = values[index];
+    caption.textContent = `${moment(stepEnd(day, index, values.length), snapshot.person.timezone)} · `
+      + (value == null ? "no sample" : `highest ${value}%`);
+  };
+  chart.addEventListener("pointerdown", readAt);
+  chart.addEventListener("pointermove", readAt);
+  chart.addEventListener("pointerleave", () => (caption.textContent = summary));
+  return [chart, caption];
+}
+
+function machineNote(sample) {
+  if (!sample) return "";
+  const age = now() - sample.time;
+  if (age > SAMPLE_STALE) return `⚠️ The last sample is ${duration(age)} old: the VM, its sampling or the router has stopped.`;
+  return `Sampled ${ago(sample.time)}. You hear on Telegram when something runs high or stops, and when it's fine again.`;
+}
+
+function memoryRows(top) {
+  return top.map(({ name, mb, count }) => el("div", { className: "row" },
+    el("span", { className: "label" }, name, count > 1 ? el("span", { className: "sub" }, `${count} processes`) : null),
+    el("span", { className: "value" }, size(mb))));
+}
+
+function memoryNote() {
+  return "Each program's processes together, with the memory they share split among them.";
 }
 
 function meter(label, percent, detail) {
@@ -595,6 +691,13 @@ function el(tag, props = {}, ...children) {
     else node.setAttribute(key, value);
   }
   node.append(...children.filter((child) => child != null && child !== false));
+  return node;
+}
+
+function svgEl(tag, attributes, ...children) {
+  const node = document.createElementNS(SVG, tag);
+  for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
+  node.append(...children);
   return node;
 }
 
