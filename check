@@ -6,6 +6,7 @@ cd "$(dirname "$(readlink -f "$0")")"
 
 SHELL_SCRIPTS=(bin/common.sh bin/assistant bin/run.sh bin/run-user.sh
                addons/voice-notes/setup addons/slack/setup addons/slack/relay-deploy addons/slack/assistant-slack-link
+               addons/backup/restic.sh addons/backup/setup addons/backup/teardown addons/backup/assistant-backup
                system/statusline.sh system/claude-usage)
 
 uvx --quiet pytest -q

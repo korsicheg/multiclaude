@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Run by `assistant addon disable backup`: takes the nightly cron line out. The repository and its
+# password stay, so the backups can still be restored.
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR source=restic.sh
+. "$(dirname "$(readlink -f "$0")")/restic.sh"
+
+{ crontab -l 2>/dev/null || true; } |
+  awk -v command="$BACKUP_COMMAND" -v comment="$BACKUP_CRON_COMMENT" '!index($0, command) && $0 != comment' |
+  crontab -

@@ -514,14 +514,17 @@ readme_summary() {
   awk 'NF && !/^#/ { sub(/\. .*/, "."); print; exit }' "$1" 2>/dev/null
 }
 
-# Turn an add-in on (once its addons/<name>/setup, if it has one, has worked) or off: config.json,
-# the assistants' rules, and the router, which reads some of it only as it starts. Then what's
-# left for the owner to do (addons/<name>/next-steps).
+# Turn an add-in on (once its addons/<name>/setup, if it has one, has worked) or off (once its
+# teardown, if it has one, has): config.json, the assistants' rules, and the router, which reads
+# some of it only as it starts. Then what's left for the owner to do (addons/<name>/next-steps).
 addon_switch() {
   local action=$1 name=$2 folder="$ROOT/addons/$2" change
   [[ "$name" =~ ^[a-z][a-z-]*$ ]] && [ -d "$folder" ] || die "no add-in named '$name' (assistant addon list)"
   if [ "$action" = enable ] && [ -x "$folder/setup" ]; then
     "$folder/setup" || die "setting up $name failed, so it stays off"
+  fi
+  if [ "$action" = disable ] && [ -x "$folder/teardown" ]; then
+    "$folder/teardown" || die "taking $name down failed, so it stays on"
   fi
   change='.addons = ((.addons // []) - [$n])'
   [ "$action" = disable ] || change="$change + [\$n]"

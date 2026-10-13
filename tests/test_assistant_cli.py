@@ -322,7 +322,7 @@ def test_addon_list_shows_each_add_in_off_with_what_it_does(home):
     out = home.run("addon", "list").stdout.splitlines()
 
     assert [line.split()[:2] for line in out] == [[name, "off"] for name in sorted(
-        ["locations", "model-fallback", "quiet-hours", "siri", "skill-notes", "slack", "voice-notes"])]
+        ["backup", "locations", "model-fallback", "quiet-hours", "siri", "skill-notes", "slack", "voice-notes"])]
     assert out[-1].endswith("off  Telegram voice notes are transcribed on the machine before the person's assistant gets them, "
                             "and so are voice clips recorded in Slack while the slack add-in is on too.")
 
@@ -405,3 +405,148 @@ def test_help_lists_the_add_ins_commands(home):
 def test_relay_deploy_needs_the_cloudflare_token_first(home):
     r = home.run("relay", "deploy")
     assert r.returncode != 0 and "cloudflare.json" in r.stderr
+
+
+# --- the backup add-in ---------------------------------------------------------------------------
+
+FAKE_RESTIC = """#!/bin/sh
+echo "$RESTIC_REPOSITORY|$RESTIC_PASSWORD_FILE|$*" >> "$FAKE_CLAUDE_DIR/restic.log"
+for word in "$@"; do  # restic-fails-<word> holds "<exit code> <error>" for a restic command with that word
+  if [ -f "$FAKE_CLAUDE_DIR/restic-fails-$word" ]; then
+    read -r code error < "$FAKE_CLAUDE_DIR/restic-fails-$word"; echo "$error" >&2; exit "$code"
+  fi
+done
+"""
+
+RCLONE = "-o rclone.program=/opt/rclone"
+
+
+@pytest.fixture
+def backup(kept_crontab):
+    """A home with a fake restic, a crontab that keeps its lines, and the backup's repository named."""
+    home = kept_crontab
+    (home.fake.bin / "restic").write_text(FAKE_RESTIC)
+    (home.fake.bin / "restic").chmod(0o755)
+    (home.root / "state").mkdir()
+    (home.root / "state" / "backup.json").write_text(json.dumps({"repository": "rclone:cloud:Backups", "rclone": "/opt/rclone"}))
+    return home
+
+
+def backup_on(home):
+    (home.root / "config.json").write_text(json.dumps({"addons": ["backup"]}))
+
+
+def restic_fails(home, word, code, error):
+    (home.fake.home / f"restic-fails-{word}").write_text(f"{code} {error}\n")
+
+
+def restic_calls(home):
+    """(repository, password file, arguments) of each restic run."""
+    log = home.fake.home / "restic.log"
+    return [tuple(line.split("|")) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def last_success(home, days_ago):
+    state = home.root / "state" / "backup"
+    state.mkdir(exist_ok=True)
+    (state / "last-success").write_text(f"{int(time.time() - days_ago * 86400)}\n")
+
+
+def test_backup_stays_off_until_its_repository_is_named(backup):
+    (backup.root / "state" / "backup.json").unlink()
+
+    r = backup.run("addon", "enable", "backup")
+
+    assert r.returncode != 0 and "no repository in" in r.stderr and "stays off" in r.stderr
+    assert restic_calls(backup) == []
+
+
+def test_enabling_backup_makes_a_private_password_starts_the_repository_and_runs_it_nightly(backup):
+    restic_fails(backup, "cat", 10, "Fatal: repository does not exist")
+
+    r = backup.run("addon", "enable", "backup")
+
+    password = backup.root / "state" / "backup-password"
+    assert r.returncode == 0 and "Keep a copy off this machine" in r.stdout
+    assert password.stat().st_mode & 0o777 == 0o600 and len(password.read_text().strip()) >= 40
+    assert restic_calls(backup)[-1] == ("rclone:cloud:Backups", str(password), f"{RCLONE} init")
+    root = backup.root
+    assert f"30 2 * * * {root}/bin/assistant backup >> {root}/logs/backup.log 2>&1" in crontab(backup).splitlines()
+
+
+def test_enabling_backup_again_keeps_its_password_its_repository_and_one_cron_line(backup):
+    backup.run("addon", "enable", "backup")
+    password = (backup.root / "state" / "backup-password").read_text()
+
+    assert backup.run("addon", "enable", "backup").returncode == 0
+
+    assert (backup.root / "state" / "backup-password").read_text() == password
+    assert [args for _, _, args in restic_calls(backup)] == [f"{RCLONE} cat config"] * 2
+    assert crontab(backup).count("assistant backup") == 1
+
+
+def test_disabling_backup_takes_its_cron_lines_out_and_keeps_the_rest(backup):
+    (backup.fake.home / "crontab").write_text("# alice: brief\n0 7 * * * brief\n")
+    backup.run("addon", "enable", "backup")
+
+    assert backup.run("addon", "disable", "backup").returncode == 0
+
+    assert crontab(backup) == "# alice: brief\n0 7 * * * brief\n"
+    assert (backup.root / "state" / "backup-password").exists()
+
+
+def test_a_backup_saves_what_isnt_in_the_repo_and_keeps_some_older_ones(backup):
+    backup_on(backup)
+    (backup.fake.home / "crontab").write_text("0 7 * * * brief\n")
+
+    assert backup.run("backup").returncode == 0
+
+    (_, _, unlock), (_, _, snapshot), (_, _, forget) = restic_calls(backup)
+    root, home = backup.root, backup.home
+    assert unlock == f"{RCLONE} unlock"
+    assert snapshot.startswith(f"{RCLONE} backup --exclude-caches --exclude {home}/.claude/cache --exclude .cache")
+    assert snapshot.endswith(f" {root}/config.json {root}/users.json {root}/state {home}/.claude {home}/workspaces")
+    assert forget == f"{RCLONE} forget --prune --keep-daily 7 --keep-weekly 4 --keep-monthly 12"
+    assert (root / "state" / "backup" / "crontab").read_text() == "0 7 * * * brief\n"
+    assert (root / "state" / "backup" / "last-success").exists()
+
+
+def test_a_file_restic_could_not_read_still_counts_as_a_backup(backup):
+    backup_on(backup)
+    restic_fails(backup, "backup", 3, "Warning: at least one source file could not be read")
+
+    r = backup.run("backup")
+
+    assert r.returncode == 0 and "could not be read" in r.stderr
+    assert (backup.root / "state" / "backup" / "last-success").exists()
+
+
+def test_one_failed_night_says_nothing(backup):
+    backup_on(backup)
+    last_success(backup, days_ago=1)
+    restic_fails(backup, "backup", 1, "Fatal: unable to open repository")
+
+    assert backup.run("backup").returncode == 1
+
+    assert backup.sent() == []
+
+
+def test_once_the_last_good_backup_is_two_days_old_the_owner_hears_of_each_failure(backup):
+    backup_on(backup)
+    last_success(backup, days_ago=3)
+    restic_fails(backup, "backup", 1, "Fatal: unable to open repository")
+
+    assert backup.run("backup").returncode == 1
+
+    [message] = backup.sent()
+    assert "The nightly backup keeps failing: the last good one is from" in message
+    assert "`Fatal: unable to open repository`" in message
+
+
+def test_backup_restic_runs_any_restic_command_on_the_repository(backup):
+    backup_on(backup)
+
+    assert backup.run("backup", "restic", "snapshots", "--latest", "1").returncode == 0
+
+    password = str(backup.root / "state" / "backup-password")
+    assert restic_calls(backup) == [("rclone:cloud:Backups", password, f"{RCLONE} snapshots --latest 1")]

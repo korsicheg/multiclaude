@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# assistant backup [restic <args>]: back up the bot and everyone's files now, or run restic on the backup
+# The backup add-in (README.md): what isn't in the repo goes into the restic repository that
+# state/backup.json names. Cron runs `assistant backup` every night.
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR source=restic.sh
+. "$(dirname "$(readlink -f "$0")")/restic.sh"
+
+KEEP=(--keep-daily 7 --keep-weekly 4 --keep-monthly 12)
+STALE_AFTER=$((2 * 24 * 3600))  # seconds without a good backup before the owner hears of it
+RESTIC_INCOMPLETE=3  # restic backup's exit code when it couldn't read some files (gone mid-backup, say)
+
+# Left out: what Claude Code, the plugins and the browsers make again by themselves.
+EXCLUDES=(--exclude-caches --exclude "$HOME/.claude/cache" --exclude .cache --exclude node_modules
+          --exclude venv --exclude .venv --exclude Cache --exclude "Code Cache" --exclude GPUCache
+          --exclude "Dawn*Cache")
+
+main() {
+  case "${1:-}" in
+    "") back_up ;;
+    restic) shift; on_repository "$@" ;;
+    *) echo "usage: assistant backup [restic <args>…]" >&2; exit 2 ;;
+  esac
+}
+
+back_up() {
+  mkdir -p "$BACKUP_STATE"
+  exec 9>"$BACKUP_STATE/lock"
+  flock -n 9 || { echo "A backup is already running."; return 0; }
+  crontab -l > "$BACKUP_STATE/crontab" 2>/dev/null || true
+  echo "=== $(date -Is)"
+  local status=0
+  update_repository 2> "$BACKUP_STATE/errors" || status=$?
+  cat "$BACKUP_STATE/errors" >&2
+  [ "$status" = 0 ] || { warn_when_stale; exit 1; }
+  date +%s > "$BACKUP_STATE/last-success"
+}
+
+# unlock clears only the locks of restic runs that are gone: a killed run's would stop this one.
+update_repository() {
+  on_repository unlock && save_snapshot && on_repository forget --prune "${KEEP[@]}"
+}
+
+save_snapshot() {
+  local status=0
+  local -a paths
+  readarray -t paths < <(backed_up_paths)
+  on_repository backup "${EXCLUDES[@]}" "${paths[@]}" || status=$?
+  [ "$status" = 0 ] || [ "$status" = "$RESTIC_INCOMPLETE" ]
+}
+
+# What isn't in the repo (README, "What's not in this repo"): the bot's settings and state; Claude
+# Code's, with everyone's chat history, memory and MCP servers, the bot token and the shared plugins
+# and skills; and everyone's folder.
+backed_up_paths() {
+  local path
+  for path in "$ROOT/.env" "$ROOT/config.json" "$ROOT/users.json" "$ROOT/state" \
+              "$HOME/.claude" "$HOME/.claude.json" "$HOME/workspaces" "$HOME/.config/claude-usage"; do
+    if [ -e "$path" ]; then echo "$path"; fi
+  done
+}
+
+# One bad night (the storage out of reach for a while) says nothing. Once the last good backup is
+# STALE_AFTER old, the owner hears of it every night until one works.
+warn_when_stale() {
+  local last error headline
+  last=$(cat "$BACKUP_STATE/last-success" 2>/dev/null || echo 0)
+  [ $(( $(date +%s) - last )) -ge "$STALE_AFTER" ] || return 0
+  error=$(grep . "$BACKUP_STATE/errors" | tail -1 | tr -d '`' || true)
+  if [ "$last" = 0 ]; then
+    headline="The nightly backup hasn't worked yet."
+  else
+    headline="The nightly backup keeps failing: the last good one is from $(date -ud "@$last" '+%-d %b %Y')."
+  fi
+  "$ROOT/bin/assistant" notify "⚠️ **$headline** restic says: \`${error:-nothing}\`. The log is ~/assistant/logs/backup.log."
+}
+
+main "$@"

@@ -30,6 +30,7 @@ Add-ins are in the repo but off until the owner turns them on. The core works fu
 | [quiet-hours](addons/quiet-hours/README.md) | The bot's messages arrive silently during each person's quiet hours | Nothing |
 | [model-fallback](addons/model-fallback/README.md) | A person hears when a safety classifier moves their assistant to another model, and it can switch back | Nothing |
 | [skill-notes](addons/skill-notes/README.md) | A quiet note in the chat whenever an assistant loads a skill | Nothing |
+| [backup](addons/backup/README.md) | Every night, everyone's settings, memory and files, and the bot's own, go into an encrypted backup off the machine | restic, and somewhere to keep the backups |
 
 ## Requirements
 
@@ -191,9 +192,9 @@ assistant addon enable <name>
 assistant addon disable <name>
 ```
 
-Enabling runs the add-in's own setup, if it has one (voice-notes installs Whisper, slack checks its tokens), lists it in `config.json`, adds its rules to the assistants' rules, restarts the router and prints anything left to do. Each assistant reads its new rules from its next `/clear` or restart. Each add-in's README says what it needs and how to set it up:
+Enabling runs the add-in's own setup, if it has one (voice-notes installs Whisper, slack checks its tokens, backup starts its repository), and disabling its teardown (backup takes its cron line out). Enabling lists it in `config.json`, adds its rules to the assistants' rules, restarts the router and prints anything left to do. Each assistant reads its new rules from its next `/clear` or restart. Each add-in's README says what it needs and how to set it up:
 
-- [slack](addons/slack/README.md), [siri](addons/siri/README.md), [voice-notes](addons/voice-notes/README.md), [locations](addons/locations/README.md), [quiet-hours](addons/quiet-hours/README.md), [model-fallback](addons/model-fallback/README.md), [skill-notes](addons/skill-notes/README.md)
+- [slack](addons/slack/README.md), [siri](addons/siri/README.md), [voice-notes](addons/voice-notes/README.md), [locations](addons/locations/README.md), [quiet-hours](addons/quiet-hours/README.md), [model-fallback](addons/model-fallback/README.md), [skill-notes](addons/skill-notes/README.md), [backup](addons/backup/README.md)
 
 ## Adding people
 
@@ -261,7 +262,7 @@ assistant addon list|enable|disable
 
 ## What's not in this repo
 
-These files hold secrets or per-person data, and `.gitignore` keeps them out. Back them up separately if you want a full restore:
+These files hold secrets or per-person data, and `.gitignore` keeps them out. Back them up separately if you want a full restore. The [backup](addons/backup/README.md) add-in does that every night:
 
 - `~/assistant/.env`: the API key and proxy address, if any
 - `~/assistant/config.json`: the bot's name and the add-ins that are on
@@ -273,7 +274,7 @@ These files hold secrets or per-person data, and `.gitignore` keeps them out. Ba
 - The crontab (`crontab -l`): everyone's scheduled jobs
 - `~/.config/claude-usage/`: the plan-limits login
 
-To restore on a new machine, follow the setup above, put these back, and run `assistant start-users`, or pair everyone again.
+To restore on a new machine, follow the setup above, put these back, and run `assistant start-users`, or pair everyone again. The backup add-in's README has the commands for its backups.
 
 ## Updating
 

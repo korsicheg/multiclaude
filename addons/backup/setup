@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Run by `assistant addon enable backup`: checks restic and the repository's settings, makes the
+# backup's password the first time, starts the repository when it's new, and adds the nightly cron
+# line (README.md, Setup).
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR source=restic.sh
+. "$(dirname "$(readlink -f "$0")")/restic.sh"
+
+fail() { echo "error: $*" >&2; exit 1; }
+
+command -v restic >/dev/null || fail "install restic first: sudo apt install restic"
+[ -n "$(backup_setting repository)" ] || fail "no repository in $BACKUP_SETTINGS yet: see $ROOT/addons/backup/README.md, Setup"
+if [ ! -s "$BACKUP_PASSWORD" ]; then
+  (umask 077 && openssl rand -base64 32 > "$BACKUP_PASSWORD")
+  echo "Made the backup's password, $BACKUP_PASSWORD. Keep a copy off this machine: without it the backups can't be read."
+fi
+on_repository cat config >/dev/null 2>&1 || on_repository init || fail "can't open or start the repository"
+crontab -l 2>/dev/null | grep -qF "$BACKUP_COMMAND" ||
+  { crontab -l 2>/dev/null || true; echo "$BACKUP_CRON_COMMENT"; echo "$BACKUP_CRON_LINE"; } | crontab -
