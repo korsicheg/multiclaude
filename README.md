@@ -33,13 +33,69 @@ Add-ins are in the repo but off until the owner turns them on. The core works fu
 
 ## Requirements
 
+[Preparing a fresh VM](#preparing-a-fresh-vm) below sets all of this up on a new Ubuntu server.
+
 - Any Linux machine with systemd, and a user with passwordless sudo. The bot and every person's assistant run as that user, with full admin rights, so add only people you would trust with the machine.
 - The machine's timezone set to UTC (`sudo timedatectl set-timezone UTC`): cron runs in it, and the bot reads cron times as UTC.
 - [Claude Code](https://code.claude.com), with its first-run onboarding done (run `claude` once by hand). The sessions use either Claude Code's own login (a Claude Pro or Max plan: run `claude`, then `/login`) or an Anthropic API key.
 - [Bun](https://bun.sh) (the Telegram plugin runs on it), plus `tmux`, `jq`, `curl` 8.3+, `git`, `openssl` and Python 3.10+. `assistant install` adds [uv](https://docs.astral.sh/uv/) if it's missing.
 - A Telegram bot token. Message [@BotFather](https://t.me/BotFather), send `/newbot`, pick a name and a username ending in `bot`, and copy the token.
-- For the control panel: a free Cloudflare account, and Node.js (`npx` runs `wrangler` to deploy the relay). Everything else works without it.
+- For the control panel: a free Cloudflare account, and Node.js 22+ (`npx` runs `wrangler` to deploy the relay). Everything else works without it.
 - For development: Node.js and `shellcheck`, which `./check` uses with uv.
+
+## Preparing a fresh VM
+
+What a new server needs before `assistant install`, as commands for Ubuntu 24.04 LTS. Run them over SSH as the user the bot will run as (on most cloud images, `ubuntu`).
+
+**Pick the machine.** It has to be a full VM, not a container: the bot needs systemd and sudo. Give it nothing else to run, since every assistant is a full admin. The models run at Anthropic, so the machine needs memory more than CPU. Count about 2 GB for the system and the bot and about 1 GB per person (more with many MCP servers). The voice-notes add-in also needs 1.5–2.5 GB while it transcribes, and about 1 GB of disk. A 4-core, 8 GB VPS is plenty for two to four people. Choose Ubuntu 24.04: Ubuntu 22.04 and Debian 12 ship a `curl` older than 8.3.
+
+**1. Packages, UTC, passwordless sudo.**
+
+```sh
+sudo apt update && sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt -y upgrade
+sudo apt -y install tmux jq curl git openssl unzip python3
+sudo timedatectl set-timezone UTC
+echo "$USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/90-$USER
+```
+
+If the upgrade brought a new kernel ("System restart required"), `sudo reboot` and log in again.
+
+**2. Swap and a firewall.** Long-running Claude Code sessions can grow in memory, and swap keeps one spike from taking the machine down. The bot needs no open ports: the router only connects out, to Telegram and the relay.
+
+```sh
+if ! swapon --show | grep -q .; then
+  sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+fi
+sudo ufw allow OpenSSH && sudo ufw --force enable
+```
+
+**3. Bun and Claude Code.** `assistant install` adds uv itself.
+
+```sh
+curl -fsSL https://bun.sh/install | bash
+curl -fsSL https://claude.ai/install.sh | bash
+```
+
+Log out and in again so `~/.bun/bin` and `~/.local/bin` are on your `PATH`, and check with `claude --version && bun --version`. Then run `claude` once and go through its first-run screens. To use a Claude Pro or Max plan, `/login` there; for an API key, skip it (`assistant setup` asks for the key). `/exit` when done.
+
+**4. Node.js 22, for the control panel only.** Ubuntu's own Node.js is too old for `wrangler`.
+
+```sh
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+```
+
+**5. Lock SSH to keys.** The bot can do anything on this machine, so a guessed password would give away everything. Log in with an SSH key first; once that works, turn password logins off. The file sorts first among the SSH settings, so it wins over a cloud image's own.
+
+```sh
+echo 'PasswordAuthentication no' | sudo tee /etc/ssh/sshd_config.d/00-no-passwords.conf
+sudo sshd -t && sudo systemctl restart ssh
+```
+
+If you lock yourself out, your provider's web console still gets you in. Take a snapshot in the provider's panel before big changes.
+
+Plugins that the assistants install may need more on the machine (a browser, `rclone`, a password manager's CLI): each plugin's README says what.
 
 ## Setup
 
