@@ -59,6 +59,16 @@ def test_messages_in_quiet_hours_are_sent_silently(tg):
     assert [fields.get("disable_notification") for _, fields, _ in tg.api.calls] == ["True", "True", None]
 
 
+def test_send_with_sound_notifies_even_in_quiet_hours(tg):
+    enable_addons(tg.root, "quiet-hours")
+    now = datetime.now(timezone.utc)
+    quiet_hours(tg, now - timedelta(hours=1), now + timedelta(hours=1))
+    tg("send", "--sound", "Good morning")
+    tg("send", "hello")
+
+    assert [fields.get("disable_notification") for _, fields, _ in tg.api.calls] == ["False", "True"]
+
+
 def test_messages_outside_quiet_hours_make_a_sound(tg):
     enable_addons(tg.root, "quiet-hours")
     now = datetime.now(timezone.utc)

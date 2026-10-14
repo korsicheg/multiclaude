@@ -7,11 +7,12 @@ Telegram doesn't copy code in a rich message on tap, so each --copy TEXT adds a 
 the message that copies TEXT; code formatting alone adds none. A highlight is sent as bold:
 Telegram's dark theme makes highlights unreadable.
 
-  tg send [--reply-to ID] [--file PATH]... [--copy TEXT]... [--separate] [TEXT]
+  tg send [--reply-to ID] [--file PATH]... [--copy TEXT]... [--separate] [--sound] [TEXT]
                                                     TEXT from stdin if omitted; files go below it,
                                                     in the same message; prints message_id. With
                                                     --separate, each file follows as a plain message
-                                                    of its own, which forwards alone; prints each id
+                                                    of its own, which forwards alone; prints each id.
+                                                    With --sound, it notifies even in quiet hours
   tg ask QUESTION OPTION...                         question with one button per option; prints message_id
   tg edit MESSAGE_ID [--copy TEXT]... TEXT          edit a message sent earlier (no push notification);
                                                     its copy buttons are replaced by these
@@ -50,6 +51,7 @@ class Tg:
         self.chat = chat
         self.api = BotApi(timeout=API_TIMEOUT)
         self.held = 0  # messages held because Telegram couldn't be reached
+        self.sound = False  # notify even in the person's quiet hours (tg send --sound)
 
     def need_chat(self):
         if not self.chat:
@@ -68,8 +70,9 @@ class Tg:
             self.sent(result)
 
     def send(self, args):
-        options = take_options(args, ("--reply-to", "--file", "--copy"), switches=("--separate",))
+        options = take_options(args, ("--reply-to", "--file", "--copy"), switches=("--separate", "--sound"))
         reply_to = options["--reply-to"][-1] if options["--reply-to"] else None
+        self.sound = options["--sound"]
         files, copy = options["--file"], copyable(options["--copy"])
         missing = [f for f in files if not os.path.isfile(f)]
         if missing:
@@ -89,6 +92,13 @@ class Tg:
         else:
             self.send_rich(chunks[-1], files, reply_to, copy)
 
+    def post(self, method, files=None, **params):
+        """Send a message to the chat, or hold it while Telegram can't be reached. A sender's own
+        disable_notification wins over quiet hours, so --sound asks for a notification outright."""
+        if self.sound:
+            params["disable_notification"] = False
+        self.posted(send_or_hold(self.api, method, files=files, chat_id=self.chat, **params))
+
     def send_rich(self, markdown, files=(), reply_to=None, copy=()):
         """One rich message: the Markdown, then each file as a media block below it."""
         markdown = without_highlights(markdown)
@@ -99,8 +109,8 @@ class Tg:
             media.append({"id": f"m{n}", "media": {"type": kind, "media": f"attach://file{n}"}})
             uploads[f"file{n}"] = path
         rich = {"markdown": "\n\n".join(blocks), **({"media": media} if media else {})}
-        self.posted(send_or_hold(self.api, "sendRichMessage", files=uploads or None, chat_id=self.chat,
-                                 rich_message=rich, reply_markup=copy_buttons(copy), reply_parameters=reply(reply_to)))
+        self.post("sendRichMessage", files=uploads or None, rich_message=rich, reply_markup=copy_buttons(copy),
+                  reply_parameters=reply(reply_to))
 
     def send_separately(self, markdown, files, reply_to=None, copy=()):
         """The Markdown on its own, then each file as a plain photo or document message, so each one
@@ -111,8 +121,7 @@ class Tg:
         for path in files:
             kind = file_kind(path)
             method = "sendPhoto" if kind == "photo" else "sendDocument"
-            self.posted(send_or_hold(self.api, method, files={kind: path}, chat_id=self.chat,
-                                     reply_markup=copy_buttons(copy), reply_parameters=reply(reply_to)))
+            self.post(method, files={kind: path}, reply_markup=copy_buttons(copy), reply_parameters=reply(reply_to))
             reply_to, copy = None, ()
 
     def ask(self, args):

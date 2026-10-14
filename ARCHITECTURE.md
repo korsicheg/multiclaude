@@ -99,7 +99,7 @@ Stock, the plugin drops shared locations. While this add-in is on, `bin/patch-te
 
 ### Quiet hours
 
-A person's entry in `users.json` may add `"quiet_hours": "00:00-09:00"`, in their timezone (the window may pass midnight). During those hours everything the bot sends them on Telegram arrives silently (`disable_notification`): `BotApi.call` runs the add-in's `before_telegram_send` hook for every `send…` method, so all senders get it: the router, `tg`, jobs and `assistant notify`. It reads `users.json` on every send, so an edit takes effect at once. Edits never notify anyway. Not covered: the Telegram plugin's own few messages (the "Paired!" reply) and Telegram's notices about reactions. See [addons/quiet-hours/README.md](addons/quiet-hours/README.md).
+A person's entry in `users.json` may add `"quiet_hours": "00:00-09:00"`, in their timezone (the window may pass midnight). During those hours everything the bot sends them on Telegram arrives silently (`disable_notification`): `BotApi.call` runs the add-in's `before_telegram_send` hook for every `send…` method, so all senders get it: the router, `tg`, jobs and `assistant notify`. A message whose sender set `disable_notification` itself keeps it, so `tg send --sound`, which sets it to false, notifies even then, for what a person wants to hear in those hours, such as a morning brief they wake up to. It reads `users.json` on every send, so an edit takes effect at once. Edits never notify anyway. Not covered: the Telegram plugin's own few messages (the "Paired!" reply) and Telegram's notices about reactions. See [addons/quiet-hours/README.md](addons/quiet-hours/README.md).
 
 ### Model fallback
 

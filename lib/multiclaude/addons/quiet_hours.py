@@ -2,7 +2,9 @@
 users.json entry, everything the bot sends them on Telegram arrives silently, with no sound or
 vibration. The hours are in their own timezone, and may pass midnight ("23:00-07:00"). Every sender
 posts through telegram.BotApi.call, which runs before_telegram_send: the router, tg, jobs and
-`assistant notify`. users.json is read on every send, so an edit takes effect at once."""
+`assistant notify`. A message whose sender set disable_notification itself keeps it: `tg send
+--sound` notifies even in quiet hours, for what the person wants to hear then, such as a morning
+brief they wake up to. users.json is read on every send, so an edit takes effect at once."""
 import re
 from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -15,7 +17,9 @@ WINDOW_RE = re.compile(r"(?P<start>\d\d:\d\d)-(?P<end>\d\d:\d\d)")
 
 
 def before_telegram_send(chat_id, method, params):
-    return {**params, "disable_notification": True} if is_quiet(chat_id) else params
+    if "disable_notification" in params or not is_quiet(chat_id):
+        return params
+    return {**params, "disable_notification": True}
 
 
 def panel_fields():

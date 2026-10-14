@@ -125,6 +125,15 @@ def test_separate_files_follow_the_text_each_as_a_message_of_its_own(tg, tmp_pat
     assert out == ["501", "502", "503"] and tg.recorded() == [501, 502, 503]
 
 
+def test_sound_asks_for_a_notification_on_every_message_it_sends(tg, tmp_path):
+    doc = tmp_path / "brief.pdf"
+    doc.write_bytes(b"pdf")
+    tg("send", "--sound", "--file", str(doc), "--separate", "Good morning")
+    tg("send", "later")
+
+    assert [fields.get("disable_notification") for _, fields, _ in tg.api.calls] == ["False", "False", None]
+
+
 def test_separate_files_without_text_are_just_the_files(tg, tmp_path):
     doc = tmp_path / "chart.pdf"
     doc.write_bytes(b"pdf")
