@@ -1,6 +1,6 @@
 # Slack
 
-People can also talk to their assistant from a DM with a Slack app: the same assistant and conversation as on Telegram, answering in the app they wrote from. Slash commands (`/clear`, `/model`, `/help`…) work there too, as do questions with buttons (`slack ask`), files, and voice clips, which are transcribed while the voice-notes add-in is on as well. A `/clear` from either app empties both chats; the bot deletes a person's own Slack messages only once they have signed in with Slack, which a `/clear` on Slack offers.
+People can also talk to their assistant from a DM with a Slack app: the same assistant and conversation as on Telegram, answering in the app they wrote from. Slash commands (`/clear`, `/model`, `/help`…) work there too, as do questions with buttons (`slack ask`), files, and voice clips, which are transcribed while the voice-notes add-in is on as well. A `/clear` from either app empties both chats, leaving the note that it cleared in each; the bot deletes a person's own Slack messages only once they have signed in with Slack, which a `/clear` on Slack offers.
 
 Slack never talks to the machine. It sends everything to the relay (`relay/src/slack.js`), which checks Slack's signature, answers at once (a slash command fails unless answered within 3 seconds) and holds what came until the router collects it, so nothing is lost while the machine is offline. People are matched by `"slack_id"` in their `users.json` entry. Assistants answer with `slack`, the way they use `tg`.
 

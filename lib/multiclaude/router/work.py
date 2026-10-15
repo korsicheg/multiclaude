@@ -8,7 +8,7 @@ import traceback
 from dataclasses import dataclass, field
 
 from multiclaude import addons, bot, telegram
-from multiclaude.channels import CLEARED
+from multiclaude.channels import TelegramChat
 from multiclaude.log import log
 from multiclaude.router import approvals, switching
 from multiclaude.router.session import DialogOpen
@@ -20,6 +20,7 @@ CLEAR_WAITS = ("🧹 I'll clear once I finish what I'm doing. Tap **Cancel** to 
                "or send /stop to stop me and clear now.")
 CANCEL = "Cancel"
 CANCEL_CLEAR = "cancel-clear"  # the kind of question CLEAR_WAITS is (router/asks.py)
+CLEARED = "🧹 Context cleared. Starting fresh."
 RESTARTED = "🔄 Restarted with a new conversation. Starting fresh."
 FORCE_RELOAD = "/reload-plugins --force"  # what Claude Code asks for when a reload changes MCP tools
 
@@ -106,7 +107,7 @@ class Clear(Work):
         ok = user.clear()
         user.queue.pop(0)
         if ok:
-            wipe_chats(user, user.reply_to.cleared_note() if user.reply_to else CLEARED)
+            wipe_chats(user, CLEARED)
         else:
             user.say("⚠️ I sent /clear but couldn't confirm it worked. Run `assistant status` on the VM to check.")
         return True
@@ -277,9 +278,17 @@ def wipe_chats(user, note):
     waiting = {str(w.msg_id) for w in user.queue if isinstance(w, Deliver)}
     keep = {int(m) for m in waiting if m.isdigit()}
     before, recorded = time.time(), telegram.ChatHistory(user.chat_id).take_deletable(keep)
-    user.say(note)
+    post_wipe_note(user, note)
     delete_history(user.chat_id, recorded, keep)
     addons.call("after_wipe", user, before, waiting)
+
+
+def post_wipe_note(user, note):
+    """Say note in the chat the person wrote from, and quietly in their Telegram chat too when
+    that was another app's: the Telegram chat is emptied as well, and must not stand empty."""
+    user.say(user.reply_to.wipe_note(note) if user.reply_to else note)
+    if user.chat_id and not isinstance(user.reply_to, TelegramChat):
+        TelegramChat(user.chat_id).send(note, quiet=True)
 
 
 def delete_history(chat, recorded, keep):

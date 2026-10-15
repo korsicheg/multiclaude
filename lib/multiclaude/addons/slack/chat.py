@@ -35,10 +35,9 @@ class SlackChat(Chat):
         except api.SlackError as e:
             log(f"Slack: {e}")
 
-    def cleared_note(self):
+    def wipe_note(self, note):
         """The bot can't delete the person's own messages here until they let it, so until they
         have, the note offers the sign-in that does."""
-        note = super().cleared_note()
         if api.person_api(self.person):
             return note
         link = api.sign_in_link(self.person)

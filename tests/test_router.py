@@ -1277,7 +1277,8 @@ def test_a_slow_terminal_does_not_hold_up_routing_or_the_others(r, desk, monkeyp
     monkeypatch.setattr(alice, "clear", lambda: clearing.set() or gate.wait(10))
     monkeypatch.setattr(r.work, "delete_history", lambda chat, recorded, keep: None)
     worker = r.work.Worker(alice)
-    threading.Thread(target=worker.loop, daemon=True).start()
+    loop = threading.Thread(target=worker.loop, daemon=True)
+    loop.start()
     try:
         alice.enqueue(r.work.Clear(time.time()))
         assert clearing.wait(5)  # alice's worker is now stuck in /clear
@@ -1291,6 +1292,7 @@ def test_a_slow_terminal_does_not_hold_up_routing_or_the_others(r, desk, monkeyp
     finally:
         gate.set()
         worker.stop()
+        loop.join(5)  # it finishes the /clear while the fake Bot API is still in place
 
 
 def test_removing_someone_stops_their_worker(r, desk):

@@ -268,6 +268,22 @@ def test_clear_on_slack_offers_the_sign_in_that_lets_it_delete_the_persons_own_m
     assert f"[Sign in with Slack](https://slack.test/sign-in/{ALICE_SLACK})" in slack_posts(r)[-1][1]
 
 
+def test_clear_from_slack_leaves_the_plain_note_in_the_telegram_chat_too_quietly(r, slack_desk, monkeypatch):
+    monkeypatch.setattr(r.work, "delete_history", lambda chat, recorded, keep: None)
+    from multiclaude.addons.slack import api
+    monkeypatch.setattr(api, "wipe_dm", lambda person, before, keep: None)
+    monkeypatch.setattr(api, "sign_in_link", lambda person: f"https://slack.test/sign-in/{person}")
+    slack_desk.relay_inbound({"type": "slash_commands", "payload": {
+        "command": "/clear", "text": "", "user_id": ALICE_SLACK, "channel_id": ALICE_DM, "trigger_id": "T4"}})
+    alice = slack_desk.users["alice"]
+    monkeypatch.setattr(alice, "clear", lambda: True)
+
+    r.work.serve(alice, time.time())
+
+    assert sent(r, ALICE_CHAT) == ["🧹 Context cleared. Starting fresh."]
+    assert all(p["disable_notification"] for m, p in r.api_calls if m == "sendRichMessage")
+
+
 def test_someone_back_from_signing_in_to_slack_is_told_it_worked(r, slack_desk, monkeypatch):
     from multiclaude.addons.slack import api
     signed = []

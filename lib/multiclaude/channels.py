@@ -7,8 +7,6 @@ from abc import ABC, abstractmethod
 from multiclaude import paths, questions, telegram
 from multiclaude.log import log
 
-CLEARED = "🧹 Context cleared. Starting fresh."
-
 
 class Chat(ABC):
     """A person's chat with the bot in one app."""
@@ -31,9 +29,10 @@ class Chat(ABC):
     def edit(self, message_id, text):
         """Replace a message's text; its buttons go."""
 
-    def cleared_note(self):
-        """What the person hears once /clear has worked."""
-        return CLEARED
+    def wipe_note(self, note):
+        """What the person hears here once /clear or /restart emptied their chats: note, which a
+        chat may add to."""
+        return note
 
 
 class TelegramChat(Chat):
