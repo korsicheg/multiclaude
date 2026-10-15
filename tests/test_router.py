@@ -429,30 +429,43 @@ def test_a_second_tap_on_an_answered_question_is_ignored(r, desk):
 
 # --- /clear history ----------------------------------------------------------------------------
 
-def test_wipe_history_deletes_recent_messages_and_keeps_the_rest(r, monkeypatch):
+def test_wipe_chats_deletes_recent_messages_and_keeps_those_still_on_their_way(r, desk, monkeypatch):
     deleted = []
     monkeypatch.setattr(r.work.threading, "Thread", InlineThread)
     monkeypatch.setattr(r.work, "delete_messages", lambda chat, ids: deleted.append((chat, ids)))
     now = int(time.time())
     r.telegram.MESSAGES.mkdir(parents=True)
     (r.telegram.MESSAGES / ALICE_CHAT).write_text(f"1 {now - 3 * 86400}\n2 {now - 60}\n3 {now - 30}\nbad line\n2 {now - 10}\n")
+    alice = desk.users["alice"]
+    alice.queue = [deliver(r, "h", "3")]
 
-    r.work.wipe_history(ALICE_CHAT, keep={3})
+    r.work.wipe_chats(alice, "🧹 Cleared.")
 
     assert deleted == [(ALICE_CHAT, [2])]
     assert (r.telegram.MESSAGES / ALICE_CHAT).read_text().split()[0] == "3"
 
 
-def test_wipe_history_sweeps_the_ids_it_never_recorded_between_the_recorded_ones(r, monkeypatch):
+def test_wipe_chats_posts_the_note_before_deleting_anything_and_keeps_it(r, desk, monkeypatch):
+    monkeypatch.setattr(r.work.threading, "Thread", InlineThread)
+    r.telegram.ChatHistory(ALICE_CHAT).remember(40)
+
+    r.work.wipe_chats(desk.users["alice"], "🧹 Cleared.")
+
+    methods = [m for m, _ in r.api_calls]
+    note = 900 + methods.index("sendRichMessage") + 1
+    deleted = [m for method, p in r.api_calls if method == "deleteMessages" for m in p["message_ids"]]
+    assert methods.index("sendRichMessage") < methods.index("deleteMessages")
+    assert deleted == [40]
+    assert (r.telegram.MESSAGES / ALICE_CHAT).read_text().split()[0] == str(note)  # for the next /clear
+
+
+def test_delete_history_sweeps_the_ids_it_never_recorded_between_the_recorded_ones(r, monkeypatch):
     deleted, swept = [], []
     monkeypatch.setattr(r.work.threading, "Thread", InlineThread)
     monkeypatch.setattr(r.work, "delete_messages", lambda chat, ids: deleted.append(ids))
     monkeypatch.setattr(r.work, "sweep", lambda chat, ids: swept.append(ids))
-    now = int(time.time())
-    r.telegram.MESSAGES.mkdir(parents=True)
-    (r.telegram.MESSAGES / ALICE_CHAT).write_text(f"10 {now - 90}\n12 {now - 60}\n15 {now - 30}\n17 {now - 20}\n")
 
-    r.work.wipe_history(ALICE_CHAT, keep={15})
+    r.work.delete_history(ALICE_CHAT, [10, 12, 17], keep={15})
 
     assert deleted == [[10, 12, 17]]
     assert swept == [[11, 13, 14, 16]]
@@ -512,7 +525,7 @@ def test_serve_clears_once_idle_and_keeps_messages_sent_after(r, desk, monkeypat
     wiped = []
     monkeypatch.setattr(alice, "clear", lambda: True)
     monkeypatch.setattr(alice, "ready", lambda: False)
-    monkeypatch.setattr(r.work, "wipe_history", lambda chat, keep=(): wiped.append((chat, keep)))
+    monkeypatch.setattr(r.work, "delete_history", lambda chat, recorded, keep: wiped.append((chat, keep)))
     alice.queue = [r.work.Clear(time.time()), deliver(r, "h", "7")]
 
     r.work.serve(alice, time.time())
@@ -1262,7 +1275,7 @@ def test_a_slow_terminal_does_not_hold_up_routing_or_the_others(r, desk, monkeyp
     alice = desk.users["alice"]
     gate, clearing = threading.Event(), threading.Event()
     monkeypatch.setattr(alice, "clear", lambda: clearing.set() or gate.wait(10))
-    monkeypatch.setattr(r.work, "wipe_history", lambda chat, keep=(): None)
+    monkeypatch.setattr(r.work, "delete_history", lambda chat, recorded, keep: None)
     worker = r.work.Worker(alice)
     threading.Thread(target=worker.loop, daemon=True).start()
     try:

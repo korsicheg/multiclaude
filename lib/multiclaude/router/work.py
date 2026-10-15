@@ -106,9 +106,9 @@ class Clear(Work):
         ok = user.clear()
         user.queue.pop(0)
         if ok:
-            wipe_chats(user)
-        user.say((user.reply_to.cleared_note() if user.reply_to else CLEARED) if ok else
-                 "⚠️ I sent /clear but couldn't confirm it worked. Run `assistant status` on the VM to check.")
+            wipe_chats(user, user.reply_to.cleared_note() if user.reply_to else CLEARED)
+        else:
+            user.say("⚠️ I sent /clear but couldn't confirm it worked. Run `assistant status` on the VM to check.")
         return True
 
 
@@ -259,8 +259,7 @@ def restart_fresh(session, now):
                     "Run `assistant status` on the VM to check.")
         return
     put_switches_back(session, now)
-    wipe_chats(session)
-    session.say(RESTARTED)
+    wipe_chats(session, RESTARTED)
 
 
 def put_switches_back(session, now):
@@ -269,19 +268,23 @@ def put_switches_back(session, now):
         session.enqueue(Switch(now, setting, target, keep=False, quiet=True))
 
 
-def wipe_chats(user):
+def wipe_chats(user, note):
     """Empty the person's chats with the bot, Telegram's and those of add-ins' apps (after_wipe),
-    since all of them talk to the context /clear (or /restart) just reset. Messages sent after it,
-    still on their way to the fresh context, stay."""
+    since all of them talk to the context /clear (or /restart) just reset, leaving only note.
+    The note goes out before anything is deleted: a Telegram chat with a bot that stands empty,
+    even for a moment, shows a big Start button, as if they had never talked. Messages sent
+    after the /clear, still on their way to the fresh context, stay."""
     waiting = {str(w.msg_id) for w in user.queue if isinstance(w, Deliver)}
-    wipe_history(user.chat_id, keep={int(m) for m in waiting if m.isdigit()})
-    addons.call("after_wipe", user, time.time(), waiting)
+    keep = {int(m) for m in waiting if m.isdigit()}
+    before, recorded = time.time(), telegram.ChatHistory(user.chat_id).take_deletable(keep)
+    user.say(note)
+    delete_history(user.chat_id, recorded, keep)
+    addons.call("after_wipe", user, before, waiting)
 
 
-def wipe_history(chat, keep=()):
-    """Delete the recorded messages of a chat in the background, except the ids in keep, and
-    sweep the ids between them that were never recorded."""
-    recorded = telegram.ChatHistory(chat).take_deletable(keep)
+def delete_history(chat, recorded, keep):
+    """Delete a chat's recorded messages in the background, and sweep the ids between them that
+    were never recorded, except the ids in keep."""
     if recorded:
         unrecorded = unrecorded_between(recorded, keep)
         threading.Thread(target=lambda: (delete_messages(chat, recorded), sweep(chat, unrecorded)),

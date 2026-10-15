@@ -240,7 +240,7 @@ def test_clear_from_slack_empties_both_chats(r, slack_desk, monkeypatch):
     from multiclaude import addons
     from multiclaude.addons.slack import api
     monkeypatch.setattr(addons.slack.threading, "Thread", InlineThread)
-    monkeypatch.setattr(r.work, "wipe_history", lambda chat, keep=(): wiped.append(("telegram", chat)))
+    monkeypatch.setattr(r.work, "delete_history", lambda chat, recorded, keep: wiped.append(("telegram", chat)))
     monkeypatch.setattr(api, "wipe_dm", lambda person, before, keep: wiped.append(("slack", person)))
     slack_desk.relay_inbound({"type": "slash_commands", "payload": {
         "command": "/clear", "text": "", "user_id": ALICE_SLACK, "channel_id": ALICE_DM, "trigger_id": "T2"}})
@@ -254,8 +254,9 @@ def test_clear_from_slack_empties_both_chats(r, slack_desk, monkeypatch):
 
 
 def test_clear_on_slack_offers_the_sign_in_that_lets_it_delete_the_persons_own_messages(r, slack_desk, monkeypatch):
-    monkeypatch.setattr(r.work, "wipe_chats", lambda user: None)
+    monkeypatch.setattr(r.work, "delete_history", lambda chat, recorded, keep: None)
     from multiclaude.addons.slack import api
+    monkeypatch.setattr(api, "wipe_dm", lambda person, before, keep: None)
     monkeypatch.setattr(api, "sign_in_link", lambda person: f"https://slack.test/sign-in/{person}")
     slack_desk.relay_inbound({"type": "slash_commands", "payload": {
         "command": "/clear", "text": "", "user_id": ALICE_SLACK, "channel_id": ALICE_DM, "trigger_id": "T3"}})
