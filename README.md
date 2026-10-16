@@ -28,7 +28,7 @@ Add-ins are in the repo but off until the owner turns them on. The core works fu
 | [slack](addons/slack/README.md) | People talk to their assistant from a Slack DM too | The relay, a Slack app |
 | [siri](addons/siri/README.md) | People talk to their assistant through Siri, with an Apple Shortcut | The relay, Apple's Shortcuts app |
 | [voice-notes](addons/voice-notes/README.md) | Voice notes are transcribed with Whisper before the assistant gets them | uv, about 1 GB of disk |
-| [locations](addons/locations/README.md) | Shared locations reach the assistant, and the latest position is kept for tools | Nothing |
+| [locations](addons/locations/README.md) | Shared locations reach the assistant, and the latest position is kept for tools, from Telegram or the OwnTracks app | Nothing; the relay for OwnTracks |
 | [quiet-hours](addons/quiet-hours/README.md) | The bot's messages arrive silently during each person's quiet hours | Nothing |
 | [model-fallback](addons/model-fallback/README.md) | A person hears when a safety classifier moves their assistant to another model, and it can switch back | Nothing |
 | [skill-notes](addons/skill-notes/README.md) | A quiet note in the chat whenever an assistant loads a skill | Nothing |
@@ -181,7 +181,7 @@ The login is kept in `~/.config/claude-usage/credentials.json` and refreshes by 
 
    It deploys the Worker `assistant-relay` on your workers.dev subdomain, gives it its secrets, saves its address for the router in `state/relay.json`, and restarts the router, which then puts a **Panel** button by every chat's message box.
 
-Run `assistant relay deploy` again after a change in `relay/`, and after turning an add-in with routes on the relay (slack, siri) on or off.
+Run `assistant relay deploy` again after a change in `relay/`, and after turning an add-in with routes on the relay (slack, siri, locations) on or off.
 
 ### The bot's name
 

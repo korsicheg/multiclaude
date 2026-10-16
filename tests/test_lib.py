@@ -233,3 +233,25 @@ def test_held_messages_wait_while_telegram_cant_be_reached_or_asks_to_slow_down(
     del bot_api.fail["sendRichMessage"]
     assert outbox.flush(telegram.BotApi(base=bot_api.url)) is True
     assert [json.loads(f["rich_message"])["markdown"] for _, f, _ in bot_api.calls[-2:]] == ["one", "two"]
+
+
+# --- keyring ---
+
+def test_a_key_is_kept_only_as_its_hash_and_a_new_one_replaces_the_old(lib, tmp_path):
+    from multiclaude import keyring
+    ring = keyring.KeyRing(tmp_path / "keys.json")
+    old, bob = ring.new_key("alice"), ring.new_key("bob")
+    new = ring.new_key("alice")
+
+    assert [ring.owner(keyring.digest(k)) for k in (old, new, bob)] == [None, "alice", "bob"]
+    assert new not in (tmp_path / "keys.json").read_text()
+
+
+def test_a_revoked_key_is_forgotten(lib, tmp_path):
+    from multiclaude import keyring
+    ring = keyring.KeyRing(tmp_path / "keys.json")
+    key = ring.new_key("alice")
+
+    assert ring.has_key("alice") and ring.revoke("alice")
+    assert not ring.has_key("alice") and ring.owner(keyring.digest(key)) is None
+    assert ring.owner("") is None and ring.owner(None) is None

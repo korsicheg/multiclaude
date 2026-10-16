@@ -1,12 +1,13 @@
-"""Tests for the locations add-in (lib/multiclaude/addons/locations.py, its plugin patch and
-bin/run-user.sh's ASSISTANT_LOCATION)."""
+"""Tests for the locations add-in (lib/multiclaude/addons/locations: shared locations, OwnTracks'
+updates from the relay; its plugin patch and bin/run-user.sh's ASSISTANT_LOCATION)."""
+import json
 import os
 import shutil
 import subprocess
 
 import pytest
 
-from conftest import ALICE_CHAT, BIN, channel, enable_addons, patch, plugin_version, sent, write_json
+from conftest import ALICE_CHAT, BIN, RELAY, channel, enable_addons, patch, plugin_version, sent, write_json
 
 
 @pytest.fixture
@@ -45,6 +46,90 @@ def test_a_location_is_not_listed_while_it_is_off(r, desk, addons_on):
 
     assert desk.users["alice"].queue[0].body == "(location)"
     assert "location" not in sent(r, ALICE_CHAT)[-1]
+
+
+# --- OwnTracks ---
+
+LOCATION = {"_type": "location", "lat": 37.98, "lon": 23.73, "acc": 12, "cog": 90, "vel": 40, "batt": 80,
+            "inregions": ["Home"], "t": "u", "tst": 1791530000, "tid": "al"}
+
+
+@pytest.fixture
+def tracks(places, monkeypatch):
+    """The add-in's OwnTracks part, with a relay set up and every answer put on it recorded in
+    tracks.answered as (path, body)."""
+    from multiclaude.addons.locations import owntracks
+    from multiclaude.router import relay_entrance
+    monkeypatch.setattr(relay_entrance, "settings", lambda: RELAY)
+    owntracks.answered = []
+    monkeypatch.setattr(relay_entrance, "put", lambda url, token, body: owntracks.answered.append(
+        (url.removeprefix("https://relay.test"), json.loads(body))))
+    return owntracks
+
+
+def from_owntracks(desk, key_hash, message, request_id="0badcafe"):
+    desk.relay_inbound({"type": "owntracks", "payload": {
+        "id": request_id, "key_hash": key_hash, "message": message, "received": 1791530001}})
+
+
+def alices_position(places):
+    return json.loads((places.LOCATIONS / f"{ALICE_CHAT}.json").read_text())
+
+
+def test_an_owntracks_location_becomes_the_latest_position_as_the_plugin_keeps_it(r, desk, places, tracks):
+    from_owntracks(desk, tracks.keyring.digest(tracks.KEY_RING.new_key("alice")), LOCATION)
+
+    assert alices_position(places) == {"latitude": 37.98, "longitude": 23.73, "accuracy_m": 12, "heading": 90,
+                                       "updated": 1791530000, "source": "owntracks", "velocity_kmh": 40,
+                                       "battery": 80, "regions": ["Home"], "trigger": "u"}
+    assert tracks.answered == [("/owntracks/0badcafe", {"ok": True})]
+    assert desk.users["alice"].queue == []  # it never costs a turn
+
+
+def test_a_region_left_is_kept_with_its_event(r, desk, places, tracks):
+    transition = {"_type": "transition", "lat": 37.98, "lon": 23.73, "acc": 30, "event": "leave", "desc": "Home",
+                  "t": "c", "tst": 1791530100, "wtst": 1791000000}
+    from_owntracks(desk, tracks.keyring.digest(tracks.KEY_RING.new_key("alice")), transition)
+
+    position = alices_position(places)
+    assert (position["event"], position["region"], position["updated"]) == ("leave", "Home", 1791530100)
+    assert "trigger" not in position
+
+
+def test_an_older_update_never_replaces_a_newer_position(r, desk, places, tracks):
+    write_json(places.LOCATIONS / f"{ALICE_CHAT}.json", {"latitude": 1, "longitude": 2, "message_id": 9,
+                                                          "updated": 1791530500})
+    from_owntracks(desk, tracks.keyring.digest(tracks.KEY_RING.new_key("alice")), LOCATION)
+
+    assert alices_position(places)["latitude"] == 1
+    assert tracks.answered == [("/owntracks/0badcafe", {"ok": True})]
+
+
+def test_an_unknown_owntracks_key_is_turned_away(r, desk, places, tracks):
+    from_owntracks(desk, "0" * 64, LOCATION)
+
+    assert tracks.answered == [("/owntracks/0badcafe", {"error": "unknown OwnTracks key"})]
+    assert not (places.LOCATIONS / f"{ALICE_CHAT}.json").exists()
+
+
+def test_owntracks_messages_without_a_position_are_taken_and_dropped(r, desk, places, tracks):
+    key_hash = tracks.keyring.digest(tracks.KEY_RING.new_key("alice"))
+    from_owntracks(desk, key_hash, {"_type": "lwt", "tst": 1791530000})
+    from_owntracks(desk, key_hash, {"_type": "location", "lat": "37.9", "lon": 23.7, "tst": 1791530000}, "0badcaff")
+    from_owntracks(desk, key_hash, LOCATION, "not-an-id")
+
+    assert tracks.answered == [("/owntracks/0badcafe", {"ok": True}), ("/owntracks/0badcaff", {"ok": True})]
+    assert not (places.LOCATIONS / f"{ALICE_CHAT}.json").exists()
+
+
+def test_while_it_is_off_owntracks_updates_go_nowhere(r, desk, addons_on):
+    addons_on("locations")
+    from multiclaude.addons.locations import owntracks
+    key_hash = owntracks.keyring.digest(owntracks.KEY_RING.new_key("alice"))
+    addons_on("skill-notes")
+    from_owntracks(desk, key_hash, LOCATION)
+
+    assert not (r.paths.STATE / "locations" / f"{ALICE_CHAT}.json").exists()
 
 
 # --- the plugin patch ---

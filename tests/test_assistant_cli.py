@@ -578,6 +578,15 @@ def test_an_add_ins_command_works_only_while_the_add_in_is_on(home):
     assert len(key) > 30 and key not in (home.root / "state" / "voice-keys.json").read_text()
 
 
+def test_location_key_makes_an_owntracks_key_kept_only_as_its_hash(home):
+    home.run("addon", "enable", "locations")
+    key = home.run("location", "key", "alice").stdout.strip()
+
+    assert len(key) > 30 and key not in (home.root / "state" / "owntracks-keys.json").read_text()
+    assert home.run("location", "revoke", "alice").stdout.strip() == "alice's OwnTracks key is revoked"
+    assert home.run("location", "key", "nobody").returncode == 1
+
+
 def test_slack_link_saves_the_slack_id_while_slack_is_on(home):
     assert "comes with the slack add-in" in home.run("slack-link", "alice", "U0ALICE").stderr
     (home.root / "config.json").write_text(json.dumps({"addons": ["slack"]}))
@@ -590,6 +599,7 @@ def test_help_lists_the_add_ins_commands(home):
     out = home.run("help").stdout
     assert "assistant addon list" in out
     assert "assistant voice key|revoke <name>" in out and "(siri)" in out
+    assert "assistant location key|revoke <name>" in out and "(locations)" in out
     assert "assistant slack-link <name> <Slack id>" in out and "(slack)" in out
 
 

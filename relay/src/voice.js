@@ -8,13 +8,12 @@
  * soon after 25 seconds, so after ANSWER_WITHIN the shortcut hears the answer will come on Telegram;
  * the words stay queued.
  */
-import { hex } from "./secrets.js";
-import { answerFromVm, askVm, fromTheVm } from "./vm.js";
+import { sha256Hex } from "./secrets.js";
+import { REQUEST_ID_RE, answerFromVm, askVm, fromTheVm, newRequestId } from "./vm.js";
 
 export const ANSWER_WITHIN = 25 * 1000;  // ms Siri's request is held for the VM's answer
 export const LATE_REPLY = "On it. I'll send you the answer on Telegram.";
 export const ANSWER_MAX = 64 * 1024;     // bytes of an answer the VM puts
-export const REQUEST_ID_RE = /^[0-9a-f]{8}$/;
 const WORDS_MAX = 16 * 1024;             // bytes of what the shortcut posts
 
 export const routes = [
@@ -58,16 +57,12 @@ export function spokenWords(body) {
 
 /* The envelope that takes the words to the VM, as request id, with the key's hash in its place. */
 export async function voiceEnvelope(id, key, text, now = Date.now()) {
-  const keyHash = hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key)));
+  const keyHash = await sha256Hex(key);
   return { envelope_id: envelopeId(id), type: "voice", payload: { id, key_hash: keyHash, text, said: now / 1000 } };
 }
 
 function envelopeId(requestId) {
   return `voice:${requestId}`;
-}
-
-export function newRequestId() {
-  return hex(crypto.getRandomValues(new Uint8Array(4)));
 }
 
 /* What Siri gets for askVm's outcome: the VM's reply, a key it didn't know turned away, or the

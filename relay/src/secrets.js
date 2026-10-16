@@ -1,8 +1,13 @@
-/* HMAC signatures, hex and constant-time comparison, shared by the relay's entrances. */
+/* HMAC signatures, SHA-256, hex and constant-time comparison, shared by the relay's entrances. */
 
 export async function hmacHex(keyBytes, text) {
   const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return hex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text)));
+}
+
+/* What the VM knows an app's key by: its SHA-256, in hex. */
+export async function sha256Hex(text) {
+  return hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
 }
 
 export function hex(buffer) {

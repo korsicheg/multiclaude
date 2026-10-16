@@ -3,13 +3,23 @@ assistant, and their latest position, a live location's updates included, is kep
 read. The Telegram plugin drops locations, so bin/patch-telegram-plugin adds handlers while this is
 on: the message comes with location_lat, location_lon, location_accuracy_m and location_live_period
 in its meta, and the plugin keeps the position in LOCATIONS/<telegram id>.json. A live location's
-updates only change that file and never reach the assistant. bin/run-user.sh gives each session its
-file as ASSISTANT_LOCATION."""
+updates only change that file and never reach the assistant. The OwnTracks app can keep it up to
+date too, through the relay (owntracks.py). bin/run-user.sh gives each session its file as
+ASSISTANT_LOCATION."""
 from multiclaude import paths
+from multiclaude.addons.locations import owntracks
 from multiclaude.channels import TelegramChat
 
-LOCATIONS = paths.STATE / "locations"  # where the patched plugin keeps them
+LOCATIONS = paths.STATE / "locations"  # where the patched plugin keeps them, by Telegram id
 LIVE_UNTIL_STOPPED = 0x7FFFFFFF  # Telegram's live_period for a live location shared "until I stop it"
+
+
+def relay_envelopes():
+    return {"owntracks": from_owntracks}
+
+
+def from_owntracks(desk, payload):
+    owntracks.handle(desk, payload, LOCATIONS)
 
 
 def attachment_lines(attrs):

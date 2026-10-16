@@ -3,15 +3,13 @@ person's voice key, to the relay, which passes them to the router with the key's
 types them into that person's assistant, which answers with `tg voice ID TEXT`, and the router
 puts the answer back on the relay for Siri to speak.
 
-Keys are stored only as SHA-256 hashes, in state/voice-keys.json ({hash: name}). Each request
-leaves state/voice/<id>.json (who asked, and the Telegram record of the question) and, once
+Keys are kept only as SHA-256 hashes, in state/voice-keys.json (multiclaude.keyring). Each
+request leaves state/voice/<id>.json (who asked, and the Telegram record of the question) and, once
 answered, <id>.reply."""
-import hashlib
 import re
-import secrets
 import time
 
-from multiclaude import jsonfile, paths
+from multiclaude import jsonfile, keyring, paths
 
 KEYS = paths.STATE / "voice-keys.json"
 MAILBOX = paths.STATE / "voice"
@@ -19,40 +17,12 @@ REQUEST_ID_RE = re.compile(r"[0-9a-f]{8}")
 REQUEST_KEPT_FOR = 60 * 60
 POLL = 0.2
 
-
-def digest(key):
-    return hashlib.sha256(key.encode()).hexdigest()
-
-
-def new_key(name):
-    """A fresh voice key for name, replacing the one they had; only its hash is kept."""
-    key = secrets.token_urlsafe(32)
-
-    def replace(keys):
-        drop_keys_of(keys, name)
-        keys[digest(key)] = name
-
-    jsonfile.edit_object(KEYS, replace)
-    return key
-
-
-def revoke(name):
-    """Forget name's voice key; False if they had none."""
-    return jsonfile.edit_object(KEYS, lambda keys: drop_keys_of(keys, name), create=False)
-
-
-def drop_keys_of(keys, name):
-    for hashed in [h for h, owner in keys.items() if owner == name]:
-        del keys[hashed]
-
-
-def has_key(name):
-    return name in jsonfile.read_object(KEYS).values()
-
-
-def owner(key_hash):
-    """Whose voice key has this SHA-256 hash, or None."""
-    return jsonfile.read_object(KEYS).get(key_hash) if key_hash else None
+KEY_RING = keyring.KeyRing(KEYS)
+digest = keyring.digest
+new_key = KEY_RING.new_key
+revoke = KEY_RING.revoke
+has_key = KEY_RING.has_key
+owner = KEY_RING.owner
 
 
 def open_request(request_id, name, msg_id):

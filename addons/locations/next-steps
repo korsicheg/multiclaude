@@ -1,1 +1,1 @@
-Next: run `assistant restart`. The front desk patches the Telegram plugin for locations as it starts, and each assistant gets ASSISTANT_LOCATION as it starts.
+Next: run `assistant restart`. The front desk patches the Telegram plugin for locations as it starts, and each assistant gets ASSISTANT_LOCATION as it starts. Then `assistant relay deploy`, so the relay starts or stops taking what OwnTracks sends.

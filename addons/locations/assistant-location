@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+# assistant location key|revoke <name>: a new OwnTracks key for that user, printed once, or forget theirs
+"""OwnTracks keys, which let the OwnTracks app on a person's phone keep their latest position (the
+locations add-in, see multiclaude.addons.locations.owntracks). bin/assistant runs this while the
+add-in is on. The key goes into OwnTracks as the password, with the relay's /owntracks as the URL.
+
+  assistant location key <name>      make a new key for that person, replacing theirs, and print it
+  assistant location revoke <name>   forget that person's key
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
+
+from multiclaude import users  # noqa: E402
+from multiclaude.addons.locations import owntracks  # noqa: E402
+
+
+def main(args):
+    if len(args) != 2 or args[0] not in ("key", "revoke"):
+        print(__doc__.split("\n\n", 1)[1].rstrip())
+        return 2
+    command, name = args
+    if name not in users.load_users():
+        print(f"location: no user named {name} in users.json", file=sys.stderr)
+        return 1
+    if command == "key":
+        print(owntracks.KEY_RING.new_key(name))
+    elif owntracks.KEY_RING.revoke(name):
+        print(f"{name}'s OwnTracks key is revoked")
+    else:
+        print(f"{name} had no OwnTracks key")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
