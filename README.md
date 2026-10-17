@@ -4,7 +4,7 @@ One Telegram bot that gives each person their own Claude Code assistant, all on 
 
 Each person gets their own Claude Code session, folder (`~/workspaces/<name>`), `CLAUDE.md`, memory and chat history. They talk to it in a Telegram DM. It works on the machine as a full admin: it runs commands, edits files, schedules cron jobs, and replies with text, files and buttons. A control panel in Telegram shows each person their usage and lets them change their settings with a tap. Add-ins, off by default, bring more: Slack, Siri, voice notes and others.
 
-![How multiclaude works: a Telegram message reaches the front desk, a Claude Code session that hosts the Telegram plugin; the router reads it there and types it into the sender's own Claude Code assistant, which replies with tg through Telegram's Bot API. The control panel and the optional Slack and Siri add-ins reach the router through the relay, a Cloudflare Worker. When a browser needs the person, an assistant runs takeover, which shows them that browser live through a Cloudflare quick tunnel until they tap Done.](assets/architecture.svg)
+![How multiclaude works: a Telegram message reaches the front desk, a Claude Code session that hosts the Telegram plugin; the router reads it there and types it into the sender's own Claude Code assistant, which replies with tg through Telegram's Bot API. The control panel and the optional Slack, Siri, locations (OwnTracks) and reminders add-ins reach the router through the relay, a Cloudflare Worker. When a browser needs the person, an assistant runs takeover, which shows them that browser live through a Cloudflare quick tunnel until they tap Done.](assets/architecture.svg)
 
 ## How it fits together
 
@@ -15,7 +15,7 @@ Each person gets their own Claude Code session, folder (`~/workspaces/<name>`), 
 - **Shared plugins and skills:** each person installs their own; `assistant shared sync` moves what everyone has into `~/.claude`, so there's one copy to keep up to date.
 - **Machine health:** every 5 minutes, `assistant health sample` checks CPU, memory, swap, disks, the router and each person's assistant. The owner gets a Telegram message when something runs high or stops, and again when it's fine, and sees the machine in the control panel.
 - **Browser take-overs:** when an assistant's browser hits something only its person can do (a CAPTCHA, a payment confirmation), `bin/takeover` sends them a private link to that browser, live, through a Cloudflare quick tunnel. They work in it on their phone or computer, tap Done, and the assistant carries on.
-- **Relay and control panel** (optional): a Cloudflare Worker in `relay/` that serves the control panel, a Telegram Mini App, and holds its taps until the router collects them. Add-ins that bring other apps (Slack, Siri) come in through it too.
+- **Relay and control panel** (optional): a Cloudflare Worker in `relay/` that serves the control panel, a Telegram Mini App, and holds its taps until the router collects them. Add-ins that bring other apps (Slack, Siri, OwnTracks, a Reminders shortcut) come in through it too.
 
 The details, and the reasons behind them, are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -29,6 +29,7 @@ Add-ins are in the repo but off until the owner turns them on. The core works fu
 | [siri](addons/siri/README.md) | People talk to their assistant through Siri, with an Apple Shortcut | The relay, Apple's Shortcuts app |
 | [voice-notes](addons/voice-notes/README.md) | Voice notes are transcribed with Whisper before the assistant gets them | uv, about 1 GB of disk |
 | [locations](addons/locations/README.md) | Shared locations reach the assistant, and the latest position is kept for tools, from Telegram or the OwnTracks app | Nothing; the relay for OwnTracks |
+| [reminders](addons/reminders/README.md) | A person's Apple Reminders reach their assistant, which can add to them, through an iPhone Shortcut, with no Apple sign-in on the machine | The relay, Apple's Shortcuts app |
 | [quiet-hours](addons/quiet-hours/README.md) | The bot's messages arrive silently during each person's quiet hours | Nothing |
 | [model-fallback](addons/model-fallback/README.md) | A person hears when a safety classifier moves their assistant to another model, and it can switch back | Nothing |
 | [skill-notes](addons/skill-notes/README.md) | A quiet note in the chat whenever an assistant loads a skill | Nothing |
@@ -181,7 +182,7 @@ The login is kept in `~/.config/claude-usage/credentials.json` and refreshes by 
 
    It deploys the Worker `assistant-relay` on your workers.dev subdomain, gives it its secrets, saves its address for the router in `state/relay.json`, and restarts the router, which then puts a **Panel** button by every chat's message box.
 
-Run `assistant relay deploy` again after a change in `relay/`, and after turning an add-in with routes on the relay (slack, siri, locations) on or off.
+Run `assistant relay deploy` again after a change in `relay/`, and after turning an add-in with routes on the relay (slack, siri, locations, reminders) on or off.
 
 ### The bot's name
 
@@ -197,7 +198,7 @@ assistant addon disable <name>
 
 Enabling runs the add-in's own setup, if it has one (voice-notes installs Whisper, slack checks its tokens, backup starts its repository), and disabling its teardown (backup takes its cron line out). Enabling lists it in `config.json`, adds its rules to the assistants' rules, restarts the router and prints anything left to do. Each assistant reads its new rules from its next `/clear` or restart. Each add-in's README says what it needs and how to set it up:
 
-- [slack](addons/slack/README.md), [siri](addons/siri/README.md), [voice-notes](addons/voice-notes/README.md), [locations](addons/locations/README.md), [quiet-hours](addons/quiet-hours/README.md), [model-fallback](addons/model-fallback/README.md), [skill-notes](addons/skill-notes/README.md), [backup](addons/backup/README.md)
+- [slack](addons/slack/README.md), [siri](addons/siri/README.md), [voice-notes](addons/voice-notes/README.md), [locations](addons/locations/README.md), [reminders](addons/reminders/README.md), [quiet-hours](addons/quiet-hours/README.md), [model-fallback](addons/model-fallback/README.md), [skill-notes](addons/skill-notes/README.md), [backup](addons/backup/README.md)
 
 ## Adding people
 

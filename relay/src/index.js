@@ -11,6 +11,7 @@
  */
 import { SNAPSHOT_MAX, initDataOf, tapEnvelope, webAppUser } from "./panel.js";
 import { routes as ownTracksRoutes } from "./owntracks.js";
+import { routes as remindersRoutes } from "./reminders.js";
 import { routes as slackRoutes } from "./slack.js";
 import { fromTheVm, keepForVm, relayObject } from "./vm.js";
 import { routes as siriRoutes } from "./voice.js";
@@ -18,7 +19,7 @@ import { routes as siriRoutes } from "./voice.js";
 const KEPT_FOR = 24 * 60 * 60 * 1000;      // an envelope the VM hasn't collected in a day is dropped
 const PANEL_WAIT_FOR = 25 * 1000;          // ms a page's read waits for a snapshot newer than the one it has
 
-const ADDON_ROUTES = { slack: slackRoutes, siri: siriRoutes, locations: ownTracksRoutes };
+const ADDON_ROUTES = { slack: slackRoutes, siri: siriRoutes, locations: ownTracksRoutes, reminders: remindersRoutes };
 
 /* {method (any when missing), path (a string, or a RegExp whose match goes to handle), handle}. */
 const CORE_ROUTES = [

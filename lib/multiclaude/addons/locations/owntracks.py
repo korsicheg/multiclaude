@@ -5,9 +5,7 @@ region's enter or leave, from a known key becomes that person's latest position,
 Telegram live location keeps, the newer of the two winning. The relay holds the app's request for the
 answer: {"ok": true}, or {"error"} for a key nobody has, which the app gets as a 401. `assistant
 location` (addons/locations/assistant-location) makes and revokes keys."""
-import json
 import re
-import urllib.error
 
 from multiclaude import jsonfile, keyring, paths
 from multiclaude.log import log
@@ -41,7 +39,7 @@ def handle(desk, payload, locations):
         return
     found = position(payload.get("message"))
     if found:
-        kept = keep_newer(locations / f"{user.chat_id}.json", found)
+        kept = jsonfile.write_newer(locations / f"{user.chat_id}.json", found)
         accuracy = f" (±{found['accuracy_m']} m)" if "accuracy_m" in found else ""
         late = "" if kept else ", older than the latest: not kept"
         log(f"{name}: OwnTracks {payload['message']['_type']}{accuracy}{late}")
@@ -70,24 +68,10 @@ def is_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def keep_newer(path, found):
-    """Write found to path unless the position there is newer; whether it was written."""
-    latest = jsonfile.read_json(path, {})
-    if isinstance(latest, dict) and is_number(latest.get("updated")) and latest["updated"] > found["updated"]:
-        return False
-    jsonfile.write_json(path, found)
-    return True
-
-
 def answer(request_id, body):
-    """Put body ({ok} or {error}) on the relay for the app's request request_id."""
-    url, token = relay_entrance.address(f"/owntracks/{request_id}"), relay_entrance.token()
-    if not url or not token:
-        return
+    """Put body ({ok} or {error}) on the relay for the app's request request_id. When the app has
+    stopped waiting, its update is taken all the same."""
     try:
-        relay_entrance.put(url, token, json.dumps(body).encode())
-    except urllib.error.HTTPError as e:
-        if e.code != relay_entrance.GONE:  # gone: the app had stopped waiting, and it's taken all the same
-            log(f"OwnTracks update {request_id}: the relay refused the answer ({e})")
+        relay_entrance.answer(f"/owntracks/{request_id}", body)
     except OSError as e:
         log(f"OwnTracks update {request_id}: can't put the answer on the relay ({e})")

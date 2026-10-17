@@ -8,7 +8,7 @@
  * soon after 25 seconds, so after ANSWER_WITHIN the shortcut hears the answer will come on Telegram;
  * the words stay queued.
  */
-import { sha256Hex } from "./secrets.js";
+import { bearerKey, sha256Hex } from "./secrets.js";
 import { REQUEST_ID_RE, answerFromVm, askVm, fromTheVm, newRequestId } from "./vm.js";
 
 export const ANSWER_WITHIN = 25 * 1000;  // ms Siri's request is held for the VM's answer
@@ -36,11 +36,6 @@ async function answerForSiri(request, env, [, id]) {
   const body = await request.text();
   if (body.length > ANSWER_MAX) return new Response("too large", { status: 413 });
   return answerFromVm(env, envelopeId(id), body);
-}
-
-export function bearerKey(headers) {
-  const [scheme, key] = (headers.get("authorization") || "").split(" ");
-  return scheme?.toLowerCase() === "bearer" && key ? key.trim() : "";
 }
 
 /* The words from a JSON {"text": …} body or a plain text one; "" when there are none. */

@@ -11,6 +11,7 @@ import queue
 import socket
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -48,6 +49,22 @@ def put(url, token, body):
     request = urllib.request.Request(url, data=body, method="PUT", headers={
         "Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": "multiclaude-router"})
     urllib.request.urlopen(request, timeout=PUT_TIMEOUT).close()
+
+
+def answer(path, body):
+    """Put body, an add-in's answer to a request the relay holds for the VM, at path on the relay:
+    True once the request has it, False when nothing waits for it any more. OSError when there's no
+    relay or it can't be reached, and urllib's HTTPError (an OSError too) when it refuses the answer."""
+    url, relay_token = address(path), token()
+    if not url or not relay_token:
+        raise OSError("no relay in state/relay.json")
+    try:
+        put(url, relay_token, json.dumps(body, ensure_ascii=False).encode())
+    except urllib.error.HTTPError as e:
+        if e.code == GONE:
+            return False
+        raise
+    return True
 
 
 class RelayEntrance(threading.Thread):

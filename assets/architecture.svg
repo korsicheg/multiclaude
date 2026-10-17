@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1510" height="910" viewBox="0 0 1510 910" role="img" aria-labelledby="title desc">
   <title id="title">How multiclaude works</title>
-  <desc id="desc">A Telegram message reaches the front desk, a Claude Code session that hosts the Telegram plugin; the router reads it there and types it into the sender's own Claude Code assistant, which replies with tg through Telegram's Bot API. The control panel, and the optional Slack, Siri and locations (OwnTracks) add-ins, reach the router through the relay, a Cloudflare Worker. When a browser needs the person, an assistant runs takeover, which shows them that browser live through a Cloudflare quick tunnel until they tap Done.</desc>
+  <desc id="desc">A Telegram message reaches the front desk, a Claude Code session that hosts the Telegram plugin; the router reads it there and types it into the sender's own Claude Code assistant, which replies with tg through Telegram's Bot API. The control panel, and the optional Slack, Siri, locations (OwnTracks) and reminders add-ins, reach the router through the relay, a Cloudflare Worker. When a browser needs the person, an assistant runs takeover, which shows them that browser live through a Cloudflare quick tunnel until they tap Done.</desc>
   <!-- The architecture at a glance, kept current with ARCHITECTURE.md. Three columns: the phone, the internet, the machine.
        Solid arrows carry messages in, dashed ones replies out, dotted ones the add-ins' paths; dashed boxes are add-ins.
        Numbered badges follow one Telegram message. The card has its own white background, so it reads the same on light
@@ -79,8 +79,8 @@
   <g class="box">
     <rect class="addin" x="40" y="440" width="220" height="70" rx="10"/>
     <text class="tag" x="150" y="456">ADD-IN</text>
-    <text class="name" x="150" y="476">Siri · OwnTracks</text>
-    <text x="150" y="496">your voice · your position</text>
+    <text class="name" x="150" y="476">On your phone</text>
+    <text x="150" y="496">Siri · OwnTracks · Reminders</text>
   </g>
   <g class="box">
     <rect class="addin" x="40" y="550" width="220" height="70" rx="10"/>
@@ -104,9 +104,9 @@
     <text x="480" y="454">the add-ins' apps send, until</text>
     <text x="480" y="471">the machine collects them.</text>
     <text x="480" y="488">It serves the panel page,</text>
-    <text x="480" y="505">and holds Siri's and</text>
-    <text x="480" y="522">OwnTracks' requests until</text>
-    <text x="480" y="539">the answer comes back.</text>
+    <text x="480" y="505">and holds the requests of Siri,</text>
+    <text x="480" y="522">OwnTracks and Reminders</text>
+    <text x="480" y="539">until the answer comes back.</text>
   </g>
 
   <!-- On the machine -->
@@ -220,9 +220,9 @@
   <text class="label middle" x="645" y="450">WebSocket</text>
   <text class="label middle" x="645" y="479">both ways</text>
 
-  <!-- The add-ins' paths: Siri and OwnTracks, and Slack, also through the relay -->
+  <!-- The add-ins' paths: Siri, OwnTracks and Reminders, and Slack, also through the relay -->
   <path class="opt" d="M262,475 H368" marker-start="url(#opt)" marker-end="url(#opt)"/>
-  <text class="label middle faint" x="315" y="466">your words in,</text>
+  <text class="label middle faint" x="315" y="466">what you send in,</text>
   <text class="label middle faint" x="315" y="493">its answer back</text>
 
   <path class="opt" d="M260,585 H368" marker-end="url(#opt)"/>

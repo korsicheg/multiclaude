@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+# assistant reminders key|revoke|list|add|queue|cancel: a person's Reminders shortcut key, and their reminders
+"""Apple Reminders, kept in step by a Shortcut on a person's phone (the reminders add-in, see
+multiclaude.addons.reminders). bin/assistant runs this while the add-in is on. --user defaults to
+$ASSISTANT_USER, which every assistant's session has.
+
+  assistant reminders key <name>       make a new key for that person's shortcut, replacing theirs, and print it
+  assistant reminders revoke <name>    forget that person's key
+  assistant reminders list [--user NAME]
+                                       their open reminders as the last sync sent them, and when that was
+  assistant reminders add [--user NAME] --list LIST [--notes TEXT] [--due ISO-8601] TITLE
+                                       queue a reminder for their phone; it's added there at the next sync
+  assistant reminders queue [--user NAME]
+                                       what waits for the next sync, and what went lately
+  assistant reminders cancel [--user NAME] ID
+                                       take a queued reminder out before it goes
+"""
+import argparse
+import os
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
+
+from multiclaude import users  # noqa: E402
+from multiclaude.addons.reminders import outbox, snapshot, sync  # noqa: E402
+
+
+class Refused(Exception):
+    """What the command was asked can't be done; the message says why."""
+
+
+def main(args):
+    parsed = parser().parse_args(args)
+    try:
+        everyone = users.load_users()
+        if parsed.command in ("key", "revoke"):
+            return keys(parsed.command, person(everyone, parsed.name).name)
+        return parsed.run(person(everyone, parsed.user), parsed)
+    except Refused as e:
+        print(f"reminders: {e}", file=sys.stderr)
+        return 1
+
+
+def parser():
+    root = argparse.ArgumentParser(prog="assistant reminders", description=__doc__,
+                                   formatter_class=argparse.RawDescriptionHelpFormatter)
+    commands = root.add_subparsers(dest="command", required=True)
+    for command in ("key", "revoke"):
+        commands.add_parser(command).add_argument("name")
+    for command, run in (("list", show_reminders), ("add", queue_reminder), ("queue", show_queue), ("cancel", cancel)):
+        sub = commands.add_parser(command)
+        sub.add_argument("--user", default=os.environ.get("ASSISTANT_USER", ""))
+        sub.set_defaults(run=run)
+        if command == "add":
+            sub.add_argument("--list", required=True, dest="list_name")
+            sub.add_argument("--notes", default="")
+            sub.add_argument("--due", default="")
+            sub.add_argument("title")
+        if command == "cancel":
+            sub.add_argument("id")
+    return root
+
+
+def person(everyone, name):
+    if not name:
+        raise Refused("whose reminders? Give --user NAME")
+    if name not in everyone:
+        raise Refused(f"no user named {name} in users.json")
+    return everyone[name]
+
+
+def keys(command, name):
+    if command == "key":
+        print(sync.KEY_RING.new_key(name))
+    elif sync.KEY_RING.revoke(name):
+        print(f"{name}'s reminders key is revoked")
+    else:
+        print(f"{name} had no reminders key")
+    return 0
+
+
+def show_reminders(user, args):
+    latest = snapshot.latest(user.chat_id)
+    if latest is None:
+        print(f"{user.name}'s phone hasn't synced yet")
+    else:
+        print(f"Synced {ago(latest['updated'])}: {len(latest['reminders'])} open")
+        for list_name, reminders in by_list(latest["reminders"]).items():
+            print(f"\n{list_name}")
+            for reminder in reminders:
+                print(f"  - {described(reminder)}")
+    queued = outbox.read(user.chat_id)["queued"]
+    if queued:
+        print(f"\nWaiting for the next sync: {len(queued)} (assistant reminders queue)")
+    return 0
+
+
+def queue_reminder(user, args):
+    title = args.title.strip()
+    if not title:
+        raise Refused("a reminder needs a title")
+    if args.due and not is_iso_time(args.due):
+        raise Refused(f"--due {args.due!r} isn't an ISO 8601 time, such as 2026-10-18T09:00:00+03:00")
+    latest = snapshot.latest(user.chat_id)
+    known = {r.get("list") for r in latest["reminders"]} if latest else set()
+    reminder_id = outbox.add(user.chat_id, title, args.list_name, args.notes, args.due)
+    print(f"Queued {reminder_id}: {title} ({args.list_name}). It's added on the phone at the next sync.")
+    if known and args.list_name not in known:
+        print(f"The last sync had no open reminder in {args.list_name}; if the shortcut has no branch for it,"
+              " it goes to the shortcut's default list.")
+    return 0
+
+
+def show_queue(user, args):
+    kept = outbox.read(user.chat_id)
+    if not kept["queued"]:
+        print("Nothing waits for the next sync.")
+    for reminder in kept["queued"]:
+        print(f"{reminder['id']}  {described(reminder, with_list=True)} · queued {ago(reminder['queued'])}")
+    for reminder in kept["delivered"][-5:]:
+        print(f"went {ago(reminder['delivered'])}: {described(reminder, with_list=True)}")
+    return 0
+
+
+def cancel(user, args):
+    taken = outbox.cancel(user.chat_id, args.id)
+    if not taken:
+        raise Refused(f"nothing queued has id {args.id} (assistant reminders queue)")
+    print(f"Cancelled {args.id}: {taken['title']}")
+    return 0
+
+
+def by_list(reminders):
+    lists = {}
+    for reminder in reminders:
+        lists.setdefault(reminder.get("list") or "(no list)", []).append(reminder)
+    return lists
+
+
+def described(reminder, with_list=False):
+    """A reminder in a line: its title, then its list (with_list), due time, flag and notes."""
+    details = [reminder["list"]] if with_list and reminder.get("list") else []
+    if reminder.get("due"):
+        details.append(f"due {reminder['due']}")
+    if reminder.get("flagged"):
+        details.append("flagged")
+    if reminder.get("notes"):
+        details.append(f"notes: {reminder['notes']}")
+    return reminder["title"] + (f" · {', '.join(details)}" if details else "")
+
+
+def ago(when):
+    minutes = int(time.time() - when) // 60
+    stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(when))
+    if minutes < 60:
+        return f"{minutes} min ago ({stamp})"
+    return f"{minutes // 60} h {minutes % 60:02d} min ago ({stamp})"
+
+
+def is_iso_time(text):
+    try:
+        datetime.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

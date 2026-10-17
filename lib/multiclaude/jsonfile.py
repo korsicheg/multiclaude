@@ -44,6 +44,17 @@ def write_json(path, data):
     write_atomically(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
+def write_newer(path, data):
+    """Write data, a JSON object with the Unix time it's from as "updated", unless the object already
+    in the file is from later; whether it was written."""
+    kept = read_json(path, {})
+    kept_from = kept.get("updated") if isinstance(kept, dict) else None
+    if isinstance(kept_from, (int, float)) and not isinstance(kept_from, bool) and kept_from > data["updated"]:
+        return False
+    write_json(path, data)
+    return True
+
+
 def write_lines(path, records):
     """Write each record as a line of JSON (JSON Lines), atomically like write_json."""
     write_atomically(path, "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records))

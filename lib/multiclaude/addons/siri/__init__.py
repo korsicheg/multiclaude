@@ -4,9 +4,7 @@ its "voice" envelope carries the key's SHA-256; the words go to that key's perso
 and the answer their assistant gives with `tg voice` is put back on the relay for Siri to speak.
 Keys and the reply mailbox are in voice.py; `assistant voice` (addons/siri/assistant-voice) makes
 and revokes keys."""
-import json
 import time
-import urllib.error
 
 from multiclaude import bot, telegram
 from multiclaude.addons.siri import voice
@@ -81,14 +79,9 @@ def pass_on_reply(request_id):
 
 def answer(request_id, body):
     """Put body ({reply} or {error}) on the relay for the shortcut waiting for request_id."""
-    url, token = relay_entrance.address(f"/voice/{request_id}"), relay_entrance.token()
-    if not url or not token:
-        return
     try:
-        relay_entrance.put(url, token, json.dumps(body, ensure_ascii=False).encode())
-    except urllib.error.HTTPError as e:
-        gone = e.code == relay_entrance.GONE
-        log(f"voice request {request_id}: " + ("Siri had stopped waiting" if gone else f"the relay refused the answer ({e})"))
+        if not relay_entrance.answer(f"/voice/{request_id}", body):
+            log(f"voice request {request_id}: Siri had stopped waiting")
     except OSError as e:
         log(f"voice request {request_id}: can't put the answer on the relay ({e})")
 

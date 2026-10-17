@@ -513,7 +513,8 @@ def test_addon_list_shows_each_add_in_off_with_what_it_does(home):
     out = home.run("addon", "list").stdout.splitlines()
 
     assert [line.split()[:2] for line in out] == [[name, "off"] for name in sorted(
-        ["backup", "locations", "model-fallback", "quiet-hours", "siri", "skill-notes", "slack", "voice-notes"])]
+        ["backup", "locations", "model-fallback", "quiet-hours", "reminders", "siri", "skill-notes", "slack",
+         "voice-notes"])]
     assert out[-1].endswith("off  Telegram voice notes are transcribed on the machine before the person's assistant gets them, "
                             "and so are voice clips recorded in Slack while the slack add-in is on too.")
 

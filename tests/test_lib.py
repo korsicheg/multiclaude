@@ -45,6 +45,15 @@ def test_edit_object_without_create_writes_nothing_empty(lib, tmp_path):
     assert not path.exists()
 
 
+def test_write_newer_never_replaces_what_is_from_later(lib, tmp_path):
+    from multiclaude import jsonfile
+    path = tmp_path / "latest.json"
+    assert jsonfile.write_newer(path, {"updated": 200, "x": 1}) is True
+    assert jsonfile.write_newer(path, {"updated": 100, "x": 2}) is False
+    assert jsonfile.write_newer(path, {"updated": 200, "x": 3}) is True
+    assert jsonfile.read_object(path) == {"updated": 200, "x": 3}
+
+
 def test_locked_times_out_while_someone_else_holds_it(lib, tmp_path):
     from multiclaude import jsonfile
     import fcntl

@@ -114,3 +114,26 @@ def test_the_relay_is_read_from_state_and_none_is_no_relay(lib, tmp_path):
         json.dumps({"relay_url": "wss://relay.test/queue", "relay_token": "vm-token"}))
     assert lib.entrance.address("/app/") == "https://relay.test/app/"
     assert lib.entrance.token() == "vm-token"
+
+
+def test_an_answer_put_on_the_relay_says_whether_a_request_still_waited_for_it(lib, monkeypatch):
+    import urllib.error
+    monkeypatch.setattr(lib.entrance, "settings", lambda: {"relay_url": "wss://relay.test/queue", "relay_token": "t"})
+    put = []
+    monkeypatch.setattr(lib.entrance, "put", lambda url, token, body: put.append((url, token, json.loads(body))))
+    assert lib.entrance.answer("/voice/0badcafe", {"reply": "Ναι"}) is True
+    assert put == [("https://relay.test/voice/0badcafe", "t", {"reply": "Ναι"})]
+
+    def refused(code):
+        def put(url, token, body):
+            raise urllib.error.HTTPError(url, code, "", {}, None)
+        return put
+
+    monkeypatch.setattr(lib.entrance, "put", refused(lib.entrance.GONE))
+    assert lib.entrance.answer("/voice/0badcafe", {}) is False
+    monkeypatch.setattr(lib.entrance, "put", refused(400))
+    with pytest.raises(OSError):
+        lib.entrance.answer("/voice/0badcafe", {})
+    monkeypatch.setattr(lib.entrance, "settings", lambda: {})
+    with pytest.raises(OSError):
+        lib.entrance.answer("/voice/0badcafe", {})

@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 
 import relay from "../src/index.js";
-import { LATE_REPLY, bearerKey, spokenWords, toSiri, voiceEnvelope } from "../src/voice.js";
+import { bearerKey } from "../src/secrets.js";
+import { LATE_REPLY, spokenWords, toSiri, voiceEnvelope } from "../src/voice.js";
 import { fakeSocket, namespaceOf, newRelay } from "./fakes.js";
 
 const KEY = "alice-voice-key";

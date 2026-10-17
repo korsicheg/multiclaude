@@ -1,6 +1,7 @@
-"""Keys that let an app outside Telegram speak for a person: a Siri shortcut (the siri add-in) or
-OwnTracks (the locations add-in). The relay passes on only a key's SHA-256, and so are the keys
-kept: a JSON file {hash: name}, one key per person, which is printed once when it's made."""
+"""Keys that let an app outside Telegram speak for a person: a Siri shortcut (the siri add-in),
+OwnTracks (the locations add-in) or a Reminders shortcut (the reminders add-in). The relay passes on
+only a key's SHA-256, and so are the keys kept: a JSON file {hash: name}, one key per person, which
+is printed once when it's made."""
 import hashlib
 import secrets
 

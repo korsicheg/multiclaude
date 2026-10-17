@@ -1,4 +1,5 @@
-/* HMAC signatures, SHA-256, hex and constant-time comparison, shared by the relay's entrances. */
+/* HMAC signatures, SHA-256, hex, constant-time comparison and the key an app shows, shared by the
+ * relay's entrances. */
 
 export async function hmacHex(keyBytes, text) {
   const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
@@ -24,4 +25,11 @@ export function sameSecret(given, expected) {
   let diff = 0;
   for (let i = 0; i < given.length; i++) diff |= given.charCodeAt(i) ^ expected.charCodeAt(i);
   return diff === 0;
+}
+
+/* The key of an "Authorization: Bearer <key>" header, as an app such as a Siri or Reminders shortcut
+ * sends it; "" when there is none. */
+export function bearerKey(headers) {
+  const [scheme, key] = (headers.get("authorization") || "").split(" ");
+  return scheme?.toLowerCase() === "bearer" && key ? key.trim() : "";
 }
