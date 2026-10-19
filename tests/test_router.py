@@ -535,6 +535,20 @@ def test_serve_clears_once_idle_and_keeps_messages_sent_after(r, desk, monkeypat
     assert kinds(alice) == ["Deliver"]
 
 
+def test_clear_reloads_the_plugins_first_so_the_new_conversation_starts_on_them(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    typed = []
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    monkeypatch.setattr(alice, "run_command", lambda command: typed.append(command) or "Reloaded: 3 plugins")
+    monkeypatch.setattr(alice, "clear", lambda: typed.append("/clear") or True)
+    monkeypatch.setattr(r.work, "delete_history", lambda chat, recorded, keep: None)
+    alice.queue = [r.work.Clear(time.time())]
+
+    r.work.serve(alice, time.time())
+
+    assert typed == ["/reload-plugins --force", "/clear"]
+
+
 def test_serve_drops_a_message_when_the_assistant_never_comes_up(r, desk, monkeypatch):
     alice = desk.users["alice"]
     monkeypatch.setattr(alice, "ready", lambda: False)

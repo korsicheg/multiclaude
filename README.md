@@ -216,7 +216,7 @@ A person's entry in `users.json` can also hold `"timezone"` (an IANA name such a
 
 | Command | What it does |
 | --- | --- |
-| `/clear` | Clears your assistant's conversation (memory is kept) and deletes your chat with the bot from the last 48 hours. While your assistant is busy, `/clear` waits for it to finish and says so, with a **Cancel** button. |
+| `/clear` | Clears your assistant's conversation (memory is kept), first reloading its plugins and skills so it starts on their latest versions, and deletes your chat with the bot from the last 48 hours. While your assistant is busy, `/clear` waits for it to finish and says so, with a **Cancel** button. |
 | `/restart` | A harder `/clear`: ends your assistant's Claude Code process at once, even mid-task or stuck, and starts a new one with a new conversation. That also reloads its MCP servers, plugins and settings. Memory, files and session-only `/model` and `/effort` switches stay. |
 | `/stop` | Stops what your assistant is doing, like pressing Esc in its terminal. Messages you sent meanwhile still come next. |
 | `/usage` | Context used, session cost, model and effort, the plan's limits, and what all sessions have cost so far, per person |

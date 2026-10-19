@@ -104,6 +104,9 @@ class Clear(Work):
             user.queue.pop(0)
             log(f"{user.name}: dropped the cancelled /clear")
             return True
+        if user.ready():
+            # Plugins updated since the session started load first; forced, as /clear drops the prompt cache anyway.
+            run_in_session(user, FORCE_RELOAD)
         ok = user.clear()
         user.queue.pop(0)
         if ok:
