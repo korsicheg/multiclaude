@@ -29,36 +29,61 @@ def check(session):
     when the dialog goes away. Runs in the session's worker thread."""
     dialog = claude_ui.approval_dialog(session.pane.screen())
     pending = session.approval
-    if pending and (dialog is None or dialog.text != pending.dialog_text):
-        closed(session, pending)
-        pending = None
     if dialog is None:
+        if pending:
+            closed(session, pending)
         return
     if pending is None:
         session.approval = relay(session, dialog)
+    elif dialog.text != pending.dialog_text:
+        if pending.answer:  # the dialog it answered is gone, and this is the next
+            closed(session, pending)
+            session.approval = relay(session, dialog)
+        else:
+            session.approval = reword(session, pending, dialog)
     elif pending.answer and not pending.pressed:
         press(session, dialog, pending)
 
 
 def relay(session, dialog):
-    deadline = f" in {dialog.deny_in // 60}:{dialog.deny_in % 60:02d}" if dialog.deny_in else ""
-    text = dialog.text if len(dialog.text) <= SHOWN_MAX else dialog.text[:SHOWN_MAX] + "\n…"
-    blocks = (telegram.rich_blocks(f"🔐 {bot.name()} wants to do something that Claude Code's safety check "
-                                   "stopped. Approve it?")
-              + [{"type": "pre", "text": text}]
-              + telegram.rich_blocks(f"If you don't answer, Claude Code denies it by itself{deadline}."))
+    blocks = question_blocks(dialog)
     log(f"{session.name}: approval dialog open; asking on Telegram: {dialog.text.splitlines()[0]}")
     result = telegram.api("sendRichMessage", chat_id=session.chat_id, rich_message={"blocks": blocks},
                           reply_markup=questions.option_buttons([APPROVE, DENY]))
     message_id = result.get("message_id") if isinstance(result, dict) else None
     if message_id:
         telegram.ChatHistory(session.chat_id).remember(message_id)
-        try:
-            jsonfile.write_json(paths.ASKS / str(session.chat_id) / f"{message_id}.json",
-                                {"blocks": blocks, "options": [APPROVE, DENY], "kind": "approval"})
-        except OSError as e:
-            log(f"{session.name}: can't save approval question {message_id}: {e}")
+        save_question(session, message_id, blocks)
     return Pending(message_id, blocks, dialog.text)
+
+
+# A new question per redraw once sent a dozen in half a minute.
+def reword(session, pending, dialog):
+    """The open question shows the dialog's new text, with its buttons again."""
+    blocks = question_blocks(dialog)
+    log(f"{session.name}: approval dialog redrawn; updating its question")
+    if pending.message_id:
+        telegram.later(telegram.api, "editMessageText", chat_id=session.chat_id, message_id=pending.message_id,
+                       rich_message={"blocks": blocks}, reply_markup=questions.option_buttons([APPROVE, DENY]))
+        save_question(session, pending.message_id, blocks)
+    return Pending(pending.message_id, blocks, dialog.text)
+
+
+def question_blocks(dialog):
+    deadline = f" in {dialog.deny_in // 60}:{dialog.deny_in % 60:02d}" if dialog.deny_in else ""
+    text = dialog.text if len(dialog.text) <= SHOWN_MAX else dialog.text[:SHOWN_MAX] + "\n…"
+    return (telegram.rich_blocks(f"🔐 {bot.name()} wants to do something that Claude Code's safety check "
+                                 "stopped. Approve it?")
+            + [{"type": "pre", "text": text}]
+            + telegram.rich_blocks(f"If you don't answer, Claude Code denies it by itself{deadline}."))
+
+
+def save_question(session, message_id, blocks):
+    try:
+        jsonfile.write_json(paths.ASKS / str(session.chat_id) / f"{message_id}.json",
+                            {"blocks": blocks, "options": [APPROVE, DENY], "kind": "approval"})
+    except OSError as e:
+        log(f"{session.name}: can't save approval question {message_id}: {e}")
 
 
 def tapped(user, msg_id, label):

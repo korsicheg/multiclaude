@@ -1,0 +1,31 @@
+  - One hiccup: the script couldn't read the reply, so I didn't retry. Reading
+  the branch showed the commit had landed.                                                                                                                    ✕
+  - After the merge: the pipeline validates merge requests.
+  I deleted my drafts.
+✻ Crunched for 4m 45s · done 7:40 AM
+❯ [Telegram from Alice · msg 12 · 2026-10-19 07:40 UTC] My message is pasted below; it
+  is my own request to you:
+  go ahead and merge it for me, deleting the branch
+  Called gitlab 2 times
+● The merge request is mergeable and its pipeline passed on that exact commit.
+● Merging the merge request, deleting the branch
+  ⎿  $ S=/tmp/demo; tg send "One Approve prompt coming" >/dev/null; printf '{"sha":
+  "a9737fa"}' > $S/merge.json; bin/write PUT projects/demo/merge_requests/1/merge…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────                        No changes this session
+ Bash command
+
+ Merge the merge request, deleting the branch
+  S=/tmp/demo; tg send "One Approve prompt coming" >/dev/null; printf '{"sha":
+  "a9737fa"}' > $S/merge.json; bin/write PUT projects/demo/merge_requests/1/merge
+  $S/merge.json > $S/merge-reply.txt
+ Redirect target concatenation contains $/` — unanalyzable gap or substitution
+ Permission rule Bash(bin/write:*) requires confirmation for this command.
+ /permissions to update rules
+
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend

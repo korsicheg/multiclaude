@@ -73,7 +73,10 @@ PICKERS = {"model": pick_model, "effort": pick_effort}
 # what it wants to do, the reason, a countdown to the automatic deny, "Do you want to proceed?"
 # and numbered options with a ❯ at the cursor.
 PROCEED = "Do you want to proceed?"
-RULE_RE = re.compile(r"^─{20,}$")
+# A side panel without a border puts its own text on the rule's line.
+RULE_RE = re.compile(r"^─{20,}(\s|$)")
+# Lines Claude Code starts with these belong to the conversation above a dialog, never to it.
+CONVERSATION_MARKS = ("●", "⎿", "✻", "❯")
 OPTION_RE = re.compile(r"^\s*(❯)?\s*\d+\.\s+(.+?)\s*$")
 COUNTDOWN_RE = re.compile(r"automatically deny this request in (\d+):(\d{2})")
 
@@ -140,7 +143,7 @@ def approval_dialog(screen):
             break
     if not options:
         return None
-    top = max((i for i in range(ask) if RULE_RE.match(lines[i].strip())), default=-1)
+    top = dialog_top(lines, ask)
     body, deny_in = [], None
     for line in lines[top + 1:ask]:
         text = line.strip()
@@ -151,6 +154,16 @@ def approval_dialog(screen):
             continue
         body.append(text.removeprefix("│").strip())
     return Dialog("\n".join(body), tuple(options), deny_in)
+
+
+def dialog_top(lines, ask):
+    """The line above the dialog: its rule, or failing that the conversation's last line, so the
+    dialog's text never takes in the conversation, whose status dots blink."""
+    above = range(ask)
+    rule = max((i for i in above if RULE_RE.match(lines[i].strip())), default=None)
+    if rule is not None:
+        return rule
+    return max((i for i in above if lines[i].lstrip().startswith(CONVERSATION_MARKS)), default=-1)
 
 
 def choose(pane, dialog, word):

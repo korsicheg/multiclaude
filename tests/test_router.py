@@ -1358,6 +1358,32 @@ def test_the_approval_dialog_is_read_beside_the_side_panel(r):
         assert r.claude_ui.approval_dialog(beside_a_side_panel(screen)) == r.claude_ui.approval_dialog(screen)
 
 
+BORDERLESS = "approval-dialog-borderless-panel.txt"
+
+
+def blinked(screen):
+    """screen a moment later, when the status dot of the step at work has blinked off."""
+    return screen.replace("● Merging the merge request", "  Merging the merge request")
+
+
+def test_a_dialog_beside_a_borderless_panel_is_read_alone(r):
+    # The panel's text on the rule's line once made the whole screen read as the dialog.
+    dialog = r.claude_ui.approval_dialog(captured(BORDERLESS))
+
+    assert dialog.text.startswith("Bash command\nMerge the merge request, deleting the branch\n")
+    assert dialog.text.endswith("Permission rule Bash(bin/write:*) requires confirmation for this command.\n"
+                                "/permissions to update rules")
+    assert r.claude_ui.approval_dialog(blinked(captured(BORDERLESS))) == dialog
+
+
+def test_a_dialog_without_its_rule_stops_at_the_conversation(r):
+    screen = "\n".join(line for line in captured(BORDERLESS).splitlines() if not line.startswith("───"))
+    dialog = r.claude_ui.approval_dialog(screen)
+
+    assert "One hiccup" not in dialog.text and "Merging" not in dialog.text
+    assert r.claude_ui.approval_dialog(blinked(screen)) == dialog
+
+
 def test_the_side_panel_is_cut_off_after_a_wide_character_too(r):
     narrow, wide, full_width = "a" * 50, "🔧" + "b" * 47, "─" * 60
     screen = "\n".join([narrow + "│ panel"] * 4 + [wide + "│ panel", full_width])
@@ -1452,6 +1478,39 @@ def test_a_tap_after_the_dialog_closed_is_too_late(r, desk, dialog_on_screen):
     tap(desk, msg_id, "ask:0", "✅ Approve")
 
     assert shown(r.api_calls[-1][1]).endswith("⌛ Too late: the dialog had already closed, so Claude Code denied it.")
+
+
+def questions_sent(r):
+    return [params for method, params in r.api_calls if method == "sendRichMessage"]
+
+
+def test_a_redrawn_dialog_keeps_its_one_question(r, desk, dialog_on_screen):
+    alice, worker = dialog_on_screen.alice, dialog_on_screen.worker
+    worker.step(time.time())
+    msg_id = alice.approval.message_id
+    dialog_on_screen.screen.now = BORDERLESS
+
+    worker.step(time.time() + 1)
+
+    assert len(questions_sent(r)) == 1
+    method, params = r.api_calls[-1]
+    assert method == "editMessageText" and params["message_id"] == msg_id
+    assert "bin/write PUT" in params["rich_message"]["blocks"][1]["text"]
+    assert params["reply_markup"]["inline_keyboard"][0][0]["text"] == "✅ Approve"
+    assert alice.approval.message_id == msg_id and alice.approval.answer is None
+
+
+def test_after_an_answer_the_next_dialog_gets_a_question_of_its_own(r, desk, dialog_on_screen):
+    alice, worker = dialog_on_screen.alice, dialog_on_screen.worker
+    worker.step(time.time())
+    first = alice.approval.message_id
+    tap(desk, first, "ask:0", "✅ Approve")
+    worker.step(time.time())
+    dialog_on_screen.screen.now = BORDERLESS
+
+    worker.step(time.time() + 1)
+
+    assert len(questions_sent(r)) == 2 and alice.approval.message_id != first
 
 
 def test_nothing_is_typed_into_an_open_dialog(r, desk, dialog_on_screen, monkeypatch):
