@@ -39,8 +39,8 @@ import traceback
 from multiclaude import config, paths
 from multiclaude.log import log
 
-ALL = ("slack", "siri", "voice-notes", "locations", "reminders", "quiet-hours", "model-fallback", "skill-notes",
-       "backup")
+ALL = ("slack", "siri", "voice-notes", "stickers", "locations", "reminders", "quiet-hours", "model-fallback",
+       "skill-notes", "backup")
 
 
 class _Listing:

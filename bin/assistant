@@ -101,7 +101,7 @@ install_managed_settings() {
 }
 
 # /usage, /model and /effort read the snapshot the status line saves for each session.
-# Plugins' MCP servers and the voice-notes add-in run with uv and uvx; the official installer
+# Plugins' MCP servers and the voice-notes and stickers add-ins run with uv and uvx; the official installer
 # puts both in ~/.local/bin, first on the PATH of everything here (common.sh, the router's unit).
 install_uv() {
   command -v uv >/dev/null && return

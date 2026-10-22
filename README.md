@@ -28,6 +28,7 @@ Add-ins are in the repo but off until the owner turns them on. The core works fu
 | [slack](addons/slack/README.md) | People talk to their assistant from a Slack DM too | The relay, a Slack app |
 | [siri](addons/siri/README.md) | People talk to their assistant through Siri, with an Apple Shortcut | The relay, Apple's Shortcuts app |
 | [voice-notes](addons/voice-notes/README.md) | Voice notes are transcribed with Whisper before the assistant gets them | uv, about 1 GB of disk |
+| [stickers](addons/stickers/README.md) | Stickers reach the assistant as a picture, animated ones as a grid of frames, not only as their emoji | uv, about 100 MB of disk |
 | [locations](addons/locations/README.md) | Shared locations reach the assistant, and the latest position is kept for tools, from Telegram or the OwnTracks app | Nothing; the relay for OwnTracks |
 | [reminders](addons/reminders/README.md) | A person's Apple Reminders reach their assistant, which can add to them, through an iPhone Shortcut, with no Apple sign-in on the machine | The relay, Apple's Shortcuts app |
 | [quiet-hours](addons/quiet-hours/README.md) | The bot's messages arrive silently during each person's quiet hours | Nothing |
@@ -120,7 +121,7 @@ git clone https://github.com/korsicheg/multiclaude ~/assistant
 It links `assistant`, `tg`, `takeover` and `claude-usage` into `~/.local/bin` (make sure that is on your `PATH`), and then:
 
 - adds three Claude Code managed settings in `/etc/claude-code/managed-settings.json`: `channelsEnabled`, so the front desk can use `--channels`; `skipDangerousModePermissionPrompt`, so the bypass-permissions warning doesn't hold up sessions nobody watches; and `cleanupPeriodDays`, which keeps the transcripts that `--continue` and the router read.
-- installs [uv](https://docs.astral.sh/uv/) into `~/.local/bin` if it's missing: plugins' MCP servers and the voice-notes add-in run with `uv` and `uvx`.
+- installs [uv](https://docs.astral.sh/uv/) into `~/.local/bin` if it's missing: plugins' MCP servers and the voice-notes and stickers add-ins run with `uv` and `uvx`.
 - installs `cloudflared` from Cloudflare's apt repository if it's missing, so `apt upgrade` keeps it current: browser take-overs reach the person's phone or computer through its quick tunnels.
 - sets up the status line, which saves the snapshot `/usage`, `/model` and `/effort` read.
 - writes the assistants' rules to `~/workspaces/.claude/CLAUDE.md`, from `system/workspaces-CLAUDE.md` and the rules of each add-in that is on. Claude Code loads a parent folder's `.claude/CLAUDE.md`, so every assistant reads it, and the front desk never does.
@@ -196,9 +197,9 @@ assistant addon enable <name>
 assistant addon disable <name>
 ```
 
-Enabling runs the add-in's own setup, if it has one (voice-notes installs Whisper, slack checks its tokens, backup starts its repository), and disabling its teardown (backup takes its cron line out). Enabling lists it in `config.json`, adds its rules to the assistants' rules, restarts the router and prints anything left to do. Each assistant reads its new rules from its next `/clear` or restart. Each add-in's README says what it needs and how to set it up:
+Enabling runs the add-in's own setup, if it has one (voice-notes installs Whisper, stickers its renderer, slack checks its tokens, backup starts its repository), and disabling its teardown (backup takes its cron line out). Enabling lists it in `config.json`, adds its rules to the assistants' rules, restarts the router and prints anything left to do. Each assistant reads its new rules from its next `/clear` or restart. Each add-in's README says what it needs and how to set it up:
 
-- [slack](addons/slack/README.md), [siri](addons/siri/README.md), [voice-notes](addons/voice-notes/README.md), [locations](addons/locations/README.md), [reminders](addons/reminders/README.md), [quiet-hours](addons/quiet-hours/README.md), [model-fallback](addons/model-fallback/README.md), [skill-notes](addons/skill-notes/README.md), [backup](addons/backup/README.md)
+- [slack](addons/slack/README.md), [siri](addons/siri/README.md), [voice-notes](addons/voice-notes/README.md), [stickers](addons/stickers/README.md), [locations](addons/locations/README.md), [reminders](addons/reminders/README.md), [quiet-hours](addons/quiet-hours/README.md), [model-fallback](addons/model-fallback/README.md), [skill-notes](addons/skill-notes/README.md), [backup](addons/backup/README.md)
 
 ## Adding people
 

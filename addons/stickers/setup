@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Run by `assistant addon enable stickers`: the sticker renderer's libraries in a venv of their own,
+# outside the repo, so the router itself stays standard-library only. ASSISTANT_STICKERS moves the folder.
+set -euo pipefail
+
+STICKERS="${ASSISTANT_STICKERS:-$HOME/.local/share/stickers}"
+PACKAGES=("pillow==13.0.0" "imageio-ffmpeg==0.6.0" "rlottie-python==1.3.8")
+
+command -v uv >/dev/null || { echo "error: installing the sticker renderer needs uv: https://docs.astral.sh/uv/" >&2; exit 1; }
+[ -x "$STICKERS/venv/bin/python" ] || uv venv --python 3.12 "$STICKERS/venv"
+uv pip install --python "$STICKERS/venv/bin/python" "${PACKAGES[@]}"
+echo "The sticker renderer is ready in $STICKERS/venv."
