@@ -177,6 +177,30 @@ def test_after_escape_the_turn_goes_on_with_messages_sent_meanwhile(r, tmp_path)
     assert turn.busy
 
 
+LEFTOVER_TASK_REPORT = {"type": "user", "queueTranscriptOnly": True, "message": {
+    "content": "<task-notification>\n<status>stopped</status>\n<summary>Background shell command didn't finish "
+               "before the previous session ended</summary>\n</task-notification>"}}
+
+
+def test_a_queued_report_written_down_without_a_turn_leaves_the_session_idle(r, tmp_path):
+    turn = session(r, tmp_path).turn
+    turn.handle({"type": "queue-operation", "operation": "enqueue"})
+    turn.handle({"type": "queue-operation", "operation": "dequeue"})
+
+    turn.handle(LEFTOVER_TASK_REPORT)
+
+    assert not turn.busy
+
+
+def test_a_queued_report_written_down_mid_turn_leaves_the_turn_running(r, tmp_path):
+    turn = session(r, tmp_path).turn
+    turn.handle({"type": "assistant", "message": {"content": [{"type": "text", "text": "Working on it"}]}})
+
+    turn.handle(LEFTOVER_TASK_REPORT)
+
+    assert (turn.busy, turn.in_turn) == (True, True)
+
+
 def test_session_notes_replies_sent_with_tg(r, tmp_path):
     turn = session(r, tmp_path).turn
     turn.handle({"type": "assistant", "message": {"content": [

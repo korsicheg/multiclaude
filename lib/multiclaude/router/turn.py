@@ -73,6 +73,8 @@ class Turn:
             self.handle_reply(entry)
         elif kind == "user" and interrupted(entry) and self.pending == 0:
             self.end()  # Escape (or /stop) ends a turn without the usual turn_duration entry
+        elif kind == "user" and entry.get("queueTranscriptOnly") and self.pending == 0 and not self.in_turn:
+            self.end()  # a queued item Claude Code only wrote down, starting no turn
         elif kind == "system" and entry.get("subtype") == "turn_duration" and self.pending == 0:
             self.end()
 
