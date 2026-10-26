@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Patch the Telegram plugin for the router.
 
-The plugin owns the bot's getUpdates, so only it sees what Telegram sends. Six patches:
+The plugin owns the bot's getUpdates, so only it sees what Telegram sends. Seven patches:
 
 - tg ask buttons: the plugin drops button taps (callback queries) that aren't its own
   permission buttons. This adds a branch for callback data "ask:<n>" (what `tg ask` puts on
@@ -16,6 +16,10 @@ The plugin owns the bot's getUpdates, so only it sees what Telegram sends. Six p
   location_lon, location_accuracy_m, location_live_period), and keeps the sender's latest
   position, live updates included, in state/locations/<user id>.json. Live updates only update
   that file.
+- reactions: Telegram sends reactions only to a poller that asks for them. This asks, and an
+  emoji an allowed sender adds to a message in their private chat goes to Claude like an inbound
+  message, with the emoji as text and as reaction in meta, and message_id the message reacted
+  to. Taking a reaction off sends nothing.
 - rich messages: a formatted message (headings, lists, code, tables) arrives as rich_message
   with no text, so the plugin drops it. This passes it on as GitHub-flavored Markdown; photos,
   files and other media inside it become a note with their file_id, for `tg download`.
@@ -172,6 +176,52 @@ bot.on('edited_message:location', ctx => {
 })
 
 """ + LOCATION_HANDLERS_ANCHOR
+REACTION_IMPORT_ANCHOR = """ from 'grammy'
+"""
+REACTION_IMPORT_PATCH = REACTION_IMPORT_ANCHOR + """import { API_CONSTANTS } from 'grammy'  // multiclaude: reactions
+"""
+REACTION_UPDATES_ANCHOR = """await bot.start({
+"""
+REACTION_UPDATES_PATCH = REACTION_UPDATES_ANCHOR + """        allowed_updates: [...API_CONSTANTS.DEFAULT_UPDATE_TYPES, 'message_reaction'],  // multiclaude: reactions
+"""
+REACTION_HANDLER_ANCHOR = """type AttachmentMeta = {
+"""
+REACTION_HANDLER_PATCH = """// multiclaude: reactions. An emoji an allowed sender adds to a message in their private chat
+// reaches Claude like a message: the emoji as text and as reaction in meta, message_id the
+// message reacted to. Taking a reaction off sends nothing. Added by multiclaude's bin/patch-telegram-plugin.
+bot.on('message_reaction', async ctx => {
+  const from = ctx.from
+  if (ctx.chat?.type !== 'private' || !from || !loadAccess().allowFrom.includes(String(from.id))) return
+  const { emojiAdded, customEmojiAdded } = ctx.reactions()
+  const added = [...emojiAdded, ...await multiclaudeCustomEmoji(customEmojiAdded)].join(' ')
+  if (!added) return
+  const reaction = ctx.messageReaction
+  void mcp.notification({
+    method: 'notifications/claude/channel',
+    params: {
+      content: added,
+      meta: {
+        chat_id: String(reaction.chat.id),
+        message_id: String(reaction.message_id),
+        user: from.username ?? String(from.id),
+        user_id: String(from.id),
+        ts: new Date(reaction.date * 1000).toISOString(),
+        reaction: added,
+      },
+    },
+  }).catch(err => {
+    process.stderr.write(`telegram channel: failed to deliver a reaction to Claude: ${err}\\n`)
+  })
+})
+
+// The emoji each Premium custom emoji stands for, as its sticker says.
+async function multiclaudeCustomEmoji(ids: string[]): Promise<string[]> {
+  if (!ids.length) return []
+  const stickers = await bot.api.getCustomEmojiStickers(ids).catch(() => [])
+  return ids.map(id => stickers.find(s => s.custom_emoji_id === id)?.emoji ?? '(custom emoji)')
+}
+
+""" + REACTION_HANDLER_ANCHOR
 LOCATION_META_ANCHOR = """        ...(imagePath ? { image_path: imagePath } : {}),
 """
 LOCATION_META_PATCH = """        // multiclaude: locations. Added by multiclaude's bin/patch-telegram-plugin.
@@ -371,6 +421,10 @@ PATCHES = [
     Patch("multiclaude: locations",
           [(LOCATION_HANDLERS_ANCHOR, LOCATION_HANDLERS_PATCH), (LOCATION_META_ANCHOR, LOCATION_META_PATCH)],
           "Shared locations won't reach the assistants", addon="locations"),
+    Patch("multiclaude: reactions",
+          [(REACTION_IMPORT_ANCHOR, REACTION_IMPORT_PATCH), (REACTION_UPDATES_ANCHOR, REACTION_UPDATES_PATCH),
+           (REACTION_HANDLER_ANCHOR, REACTION_HANDLER_PATCH)],
+          "Reactions won't reach the assistants"),
     Patch("multiclaude: rich messages", [(RICH_ANCHOR, RICH_PATCH)],
           "Formatted messages (headings, lists, code) won't reach the assistants"),
     Patch("multiclaude: /help", [(HELP_ANCHOR, HELP_PATCH)],

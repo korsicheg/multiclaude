@@ -353,12 +353,17 @@ writeFileSync(PID_FILE, String(process.pid))
 """
 POLL_LOOP = """void (async () => {
   for (let attempt = 1; ; attempt++) {
-    await bot.start()
+    await bot.start({
+      onStart: () => {},
+    })
   }
 })()
 """
+IMPORTS = """import { Bot, GrammyError, type Context } from 'grammy'
+import type { ReactionTypeEmoji } from 'grammy/types'
+"""
 
-PLUGIN = TAKEOVER + HANDLER + INBOUND + TEXT + HELP + POLL_LOOP
+PLUGIN = IMPORTS + TAKEOVER + HANDLER + INBOUND + TEXT + HELP + POLL_LOOP
 
 
 def plugin_version(home, version, code=PLUGIN):

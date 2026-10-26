@@ -47,9 +47,18 @@ class Inbound:
         return self.attrs.get("callback_id")
 
     @property
+    def reaction(self):
+        """The emoji a reaction added, when this is one; msg_id is then the message reacted to."""
+        return self.attrs.get("reaction")
+
+    @property
     def key(self):
         """What identifies it for deduplication."""
-        return (self.chat, f"tap {self.tap}") if self.tap else (self.chat, self.msg_id)
+        if self.tap:
+            return self.chat, f"tap {self.tap}"
+        if self.reaction:
+            return self.chat, f"reaction {self.msg_id} {self.reaction} {self.attrs.get('ts')}"
+        return self.chat, self.msg_id
 
     @property
     def when(self):
@@ -107,6 +116,13 @@ def header(display, inbound, what="msg {id}", intro="My message is pasted below;
     pasted content; the typed header vouches for it as the person's own."""
     when = f" · {inbound.when}" if inbound.when else ""
     return f"[{inbound.app} from {display} · {what.format(id=inbound.msg_id)}{when}] {intro}"
+
+
+def typed(display, inbound):
+    """(header, body) to type into the assistant: a reaction is its header alone."""
+    if inbound.reaction:
+        return header(display, inbound, what="reaction on msg {id}", intro=f"I reacted with {inbound.reaction}."), ""
+    return header(display, inbound), body(inbound)
 
 
 def body(inbound):

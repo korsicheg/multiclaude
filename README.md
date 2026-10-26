@@ -8,7 +8,7 @@ Each person gets their own Claude Code session, folder (`~/workspaces/<name>`), 
 
 ## How it fits together
 
-- **Front desk:** a Claude Code session (`assistant.service`, tmux session `assistant`) that only hosts the official Telegram plugin, patched to pass on button taps, replies and formatted messages, and so that no other Claude Code session can take its Telegram connection. It answers nothing.
+- **Front desk:** a Claude Code session (`assistant.service`, tmux session `assistant`) that only hosts the official Telegram plugin, patched to pass on button taps, replies, reactions and formatted messages, and so that no other Claude Code session can take its Telegram connection. It answers nothing.
 - **Router:** `bin/watcher.py` (`assistant-watcher.service`, code in `lib/multiclaude/router/`) reads each inbound Telegram message from the front desk's transcript and types it into the sender's own session. It keeps "typing…" on while that session works, and handles `/clear`, `/restart`, `/stop`, `/usage`, `/model`, `/effort`, `/plugin`, `/skills`, `/mcp`, `/reload-plugins`, `/help` and `/config` itself.
 - **Assistants:** one tmux session per person (`u-<name>`), started by `bin/run-user.sh`, in that person's folder. Each replies through `bin/tg`, which calls the Telegram Bot API.
 - **Scheduled jobs:** cron lines the assistants write, each running `assistant job`: a one-shot Claude in a person's folder whose answer is sent to them.
@@ -236,12 +236,13 @@ The router also:
 
 - sets the bot's command menu, its description (the **What can this bot do?** box of an empty chat) and the line on its profile when it starts.
 - relays questions with buttons: an assistant asks with `tg ask`, you tap, the buttons are replaced by your choice, and the assistant edits the question to say what it will do. You can also just type an answer.
+- passes on your reactions: a 👍 or 👎 on any message reaches your assistant as a short answer to it, which it acts on when the meaning is clear and otherwise asks about.
 - passes on Claude Code's approval questions: when a built-in safety check stops an assistant, you get the question with Approve and Deny buttons. Claude Code denies it by itself after 2 minutes.
 - copes with the machine losing its network. Replies that can't reach Telegram are held and go out once they can, marked with when they were written; a request whose turn failed because Claude couldn't be reached is picked up again by itself; and the owner gets a quiet note about an outage of 3 minutes or more.
 - keeps the bot listening: if the front desk's Telegram plugin stops, the router restarts the front desk within two minutes and tells the owner. Messages sent meanwhile arrive then.
 - keeps Claude Code current: it runs `claude update` every half hour and restarts each session still on an older version once it has been idle for 5 minutes, conversation included. The owner gets one message per update.
 
-Button taps, what a reply quotes, formatted messages and a paired person's `/help` reach the router through a small patch to the Telegram plugin (`bin/patch-telegram-plugin`), which the front desk reapplies before every start, so plugin updates keep it. The same patch keeps the bot's Telegram connection with the front desk: another session that starts the plugin, such as a `claude mcp list` in `~/assistant`, gets its tools but doesn't poll.
+Button taps, what a reply quotes, reactions, formatted messages and a paired person's `/help` reach the router through a small patch to the Telegram plugin (`bin/patch-telegram-plugin`), which the front desk reapplies before every start, so plugin updates keep it. The same patch keeps the bot's Telegram connection with the front desk: another session that starts the plugin, such as a `claude mcp list` in `~/assistant`, gets its tools but doesn't poll.
 
 ## Browser take-overs
 

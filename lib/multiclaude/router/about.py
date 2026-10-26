@@ -24,7 +24,8 @@ COMMANDS = [
 # What reaches the assistant from Telegram (router/inbound.py); add-ins add what they bring, and
 # what their own apps take (help_info).
 CAN_SEND = {
-    TelegramChat.app: ["text, in any language", "photos and files, audio and video", "a reply to any earlier message"],
+    TelegramChat.app: ["text, in any language", "photos and files, audio and video", "a reply to any earlier message",
+                       "a reaction to any message"],
 }
 DESCRIPTION_MAX = 512        # Telegram's limits for setMyDescription
 SHORT_DESCRIPTION_MAX = 120  # and setMyShortDescription

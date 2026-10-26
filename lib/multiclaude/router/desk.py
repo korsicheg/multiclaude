@@ -241,6 +241,9 @@ class Desk:
         if msg.tap:
             asks.answer(user, msg, now)
             return
+        if msg.reaction:  # never a command, and its msg_id is the message reacted to, recorded already
+            self.deliver(user, msg, now)
+            return
         if str(msg.msg_id).isdigit():
             telegram.ChatHistory(msg.chat).remember(msg.msg_id)
         self.dispatch(user, msg, now)
@@ -335,8 +338,9 @@ class Desk:
         """Queue a message for the assistant, unless an add-in queues it its own way (on_message)."""
         user.pickups.cancel()  # with a new message the assistant carries on anyway, its last turn in view
         if not any(addons.call("on_message", user, msg, now)):
-            user.queue_message(work.Deliver(now, messages.header(user.display, msg), messages.body(msg), msg.msg_id), now)
-        log(f"{user.name}: message {msg.msg_id} queued for delivery")
+            user.queue_message(work.Deliver(now, *messages.typed(user.display, msg), msg.msg_id), now)
+        what = "reaction on message" if msg.reaction else "message"
+        log(f"{user.name}: {what} {msg.msg_id} queued for delivery")
         # In the background, and so that a failing check can never cost the message itself.
         in_background(survive, f"{user.name}'s plan limit check", self.limits.warn, user)
 

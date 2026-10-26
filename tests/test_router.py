@@ -365,6 +365,18 @@ def test_the_same_message_is_routed_once(r, desk):
     assert len(desk.users["alice"].queue) == 1
 
 
+def test_a_reaction_is_one_line_about_the_message_it_is_on(r, desk):
+    desk.inbound(channel("hi", msg_id="481"))
+    reaction = channel("👍", msg_id="481", reaction="👍", ts="2026-10-08T18:55:40.000Z")
+    desk.inbound(reaction)
+    desk.inbound(reaction)  # brought twice
+
+    _, item = desk.users["alice"].queue
+    assert item.header == "[Telegram from Alice · reaction on msg 481 · 2026-10-08 18:55 UTC] I reacted with 👍."
+    assert (item.body, item.msg_id) == ("", "481")
+    assert (r.telegram.MESSAGES / ALICE_CHAT).read_text().split()[::2] == ["481"]
+
+
 def test_a_stranger_is_told_they_have_no_assistant(r, desk):
     desk.inbound(channel("hi", chat="555"))
     assert "Ask the VM owner to run: `assistant add-user <name> 555`" in sent(r, "555")[0]

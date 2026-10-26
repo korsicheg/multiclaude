@@ -15,7 +15,7 @@ def test_patches_the_handler_once_and_keeps_the_original(tmp_path):
     server = plugin_version(tmp_path, "0.0.7")
 
     code, output = patch(tmp_path)
-    assert code == 0 and output == "telegram plugin 0.0.7: patched for tg ask buttons, replies, rich messages, /help, single poller\n"
+    assert code == 0 and output == "telegram plugin 0.0.7: patched for tg ask buttons, replies, reactions, rich messages, /help, single poller\n"
     patched = server.read_text()
     assert patched.count("multiclaude: tg ask buttons") == 1
     assert "/^ask:\\d+$/.test(data)" in patched
@@ -95,6 +95,18 @@ def test_one_patch_that_no_longer_fits_leaves_the_others_in(tmp_path):
 
     assert code == 1 and "code for 'multiclaude: replies' not found" in output
     assert "multiclaude: tg ask buttons" in server.read_text()
+
+
+def test_reactions_are_asked_for_and_reach_claude(tmp_path):
+    server = plugin_version(tmp_path, "0.0.7")
+
+    assert patch(tmp_path)[0] == 0
+    patched = server.read_text()
+    assert "import { API_CONSTANTS } from 'grammy'" in patched
+    assert "allowed_updates: [...API_CONSTANTS.DEFAULT_UPDATE_TYPES, 'message_reaction']," in patched
+    handler = patched[patched.index("bot.on('message_reaction', async ctx => {"):]
+    assert handler.index("loadAccess().allowFrom.includes(String(from.id))") < handler.index("mcp.notification(")
+    assert "message_id: String(reaction.message_id)," in handler and "reaction: added," in handler
 
 
 def test_a_paired_senders_help_goes_on_to_claude(tmp_path):
@@ -197,7 +209,7 @@ def test_only_a_channel_session_takes_over_and_polls(tmp_path):
     assert "if (MULTICLAUDE_POLLS && stale > 1 && stale !== process.pid) {" in patched
     assert "if (MULTICLAUDE_POLLS) writeFileSync(PID_FILE, String(process.pid))" in patched
     loop = patched[patched.index("void (async () => {"):]
-    assert loop.index("if (!MULTICLAUDE_POLLS) return") < loop.index("await bot.start()")
+    assert loop.index("if (!MULTICLAUDE_POLLS) return") < loop.index("await bot.start(")
 
 
 def started_as_channel(tmp_path, ps):
