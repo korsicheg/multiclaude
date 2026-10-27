@@ -181,3 +181,24 @@ def choose(pane, dialog, word):
         return f"couldn't move the cursor to {word}"
     pane.press("Enter")
     return None
+
+
+# Claude Code's message box sits between the screen's last two full-width rules, its first line
+# after a ❯. Every message the router types starts with its header in brackets: "[Telegram from …".
+PROMPT = "❯"
+
+
+def message_box(screen):
+    """The text in the message box, "" when it's empty."""
+    lines = without_side_panel(screen).splitlines()
+    rules = [i for i, line in enumerate(lines) if RULE_RE.match(line.strip())]
+    if len(rules) < 2:
+        return ""
+    box = "\n".join(line.strip() for line in lines[rules[-2] + 1:rules[-1]])
+    return box.removeprefix(PROMPT).strip()
+
+
+def holds_typed_message(screen):
+    """Whether a message the router typed is back in the message box: Escape before any reply
+    takes it out of the conversation and puts it there."""
+    return message_box(screen).startswith("[")

@@ -1393,6 +1393,14 @@ def test_the_approval_dialog_is_read_off_the_screen(r):
     assert r.claude_ui.approval_dialog(captured("approval-after.txt")) is None
 
 
+def test_a_message_put_back_in_the_box_is_read_off_the_screen(r):
+    put_back = captured("message-put-back.txt")
+    assert r.claude_ui.message_box(put_back) == "[Test C · msg 4] pasted below:\nWrite a 200 word poem about dogs."
+    for screen in (put_back, captured("message-put-back-long.txt"), beside_a_side_panel(put_back)):
+        assert r.claude_ui.holds_typed_message(screen)
+    assert not r.claude_ui.holds_typed_message(captured("message-box-empty.txt"))
+
+
 def beside_a_side_panel(screen):
     """screen as Claude Code shows it with its panel open on the right."""
     lines = screen.splitlines()
@@ -1657,6 +1665,37 @@ def test_stop_says_so_when_escape_showed_no_sign_of_stopping(r, desk, monkeypatc
 
     assert ESCAPE in r.keystrokes
     assert sent(r, ALICE_CHAT)[-1].startswith("⚠️ Escape was pressed, but Claude didn't show that it stopped.")
+
+
+@pytest.fixture
+def escape_puts_back(r, monkeypatch):
+    """Escape before any reply: Claude Code writes nothing and puts the message back in the
+    message box, which the next two Escapes empty."""
+    record = r.tmux.run
+
+    def run(*args, stdin=None):
+        result = record(*args, stdin=stdin)
+        if args[0] != "capture-pane":
+            return result
+        escapes = r.keystrokes.count(ESCAPE)
+        screen = captured("message-put-back.txt" if escapes == 1 else "message-box-empty.txt")
+        return subprocess.CompletedProcess(args, 0, screen.encode(), b"")
+
+    monkeypatch.setattr(r.tmux, "run", run)
+
+
+def test_stop_before_any_reply_empties_the_box_the_message_was_put_back_in(r, desk, escape_puts_back):
+    # 27 Oct 2026: a /stop just after a tap had the router say Escape hadn't worked, and the tap,
+    # left in the box, went out again joined to the person's next message.
+    alice = busy(desk)
+    Path(alice.tail.dir).mkdir(parents=True, exist_ok=True)
+    desk.inbound(channel("/stop"))
+
+    desk.workers["alice"].step(time.time())
+
+    assert r.keystrokes.count(ESCAPE) == 3
+    assert sent(r, ALICE_CHAT) == ["⏹️ Stopped."]
+    assert not alice.turn.busy
 
 
 def test_a_clear_that_waits_offers_cancel_once(r, desk):

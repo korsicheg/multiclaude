@@ -263,8 +263,9 @@ class Session:
         return False
 
     def stop(self):
-        """Press Escape, as a person would, which stops the turn; confirmed by the note Claude
-        Code writes for it. Returns whether it worked."""
+        """Press Escape, as a person would, which stops the turn. Confirmed by the note Claude
+        Code writes for it or, before any reply, by the message it puts back in the message box.
+        Returns whether it worked."""
         sizes = self.tail.sizes()
         try:
             self.pane.press("Escape")
@@ -276,9 +277,32 @@ class Session:
             if self.tail.written_since(sizes, INTERRUPTED_MARKER):
                 log(f"{self.name}: stopped with Escape")
                 return True
+            if self.message_put_back():
+                self.empty_message_box()
+                return True
             time.sleep(POLL)
         log(f"{self.name}: no sign that Escape stopped the turn")
         return False
+
+    def message_put_back(self):
+        """Whether the message is back in the message box: Escape before any reply writes no
+        note, and Claude Code takes the message out of the conversation instead."""
+        try:
+            return claude_ui.holds_typed_message(self.pane.screen())
+        except (subprocess.SubprocessError, OSError):
+            return False
+
+    def empty_message_box(self):
+        """End the turn, which nothing in the transcript will, and empty the box with Escape
+        twice, so the stopped message doesn't go out again with the next one."""
+        self.turn.end()
+        try:
+            self.pane.press("Escape", times=2)
+            emptied = self.wait_screen(lambda screen: not claude_ui.holds_typed_message(screen), STOP_TIMEOUT)
+        except (subprocess.SubprocessError, OSError):
+            emptied = None
+        outcome = "emptied the message box" if emptied is not None else "its message is still in the box"
+        log(f"{self.name}: stopped before any reply; {outcome}")
 
     def run_command(self, command, timeout=COMMAND_TIMEOUT):
         """Type a slash command such as `/mcp reconnect x` and return the output Claude Code
