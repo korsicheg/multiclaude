@@ -401,6 +401,10 @@ def machine(home, tmp_path):
     proc = FakeProc(tmp_path / "proc")
     proc.process(4243, "claude", 400, "claude", "--name", "alice", ppid=4242, cwd=str(home.home / "workspaces" / "alice"))
     (home.fake.bin / "tmux").write_text("#!/bin/sh\necho 4242\n")  # the shell of each tmux session
+    proc.process(5000, "node", 60, "node", "server.js", pss_mb=60)
+    pod = [{"Names": ["wiki"], "PodName": "wiki", "IsInfra": False, "State": "running", "Pid": 5000}]
+    (home.fake.bin / "podman").write_text(f"#!/bin/sh\necho '{json.dumps(pod)}'\n")
+    (home.fake.bin / "podman").chmod(0o755)
     (home.root / "config.json").write_text(json.dumps({"health": {"disk": {"at": 101, "critical": 101}}}))
     home.health = lambda *args: home.run("health", *args, env={"ASSISTANT_PROC": str(proc.root)})
     home.proc = proc
@@ -428,6 +432,7 @@ def test_health_prints_the_machine_now_with_the_alerts_at_the_last_sample(machin
     assert r.returncode == 0, r.stderr
     assert "  Memory                   95%  7.6 GB of 8 GB used, 410 MB available" in r.stdout
     assert "  Alice's assistant       running" in r.stdout
+    assert "Hosted in Podman:\n     60 MB  wiki, 1 container running" in r.stdout
     assert "Alerts at the last sample, 0 min ago: none" in r.stdout
 
 

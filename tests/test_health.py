@@ -125,16 +125,53 @@ def test_the_router_runs_while_systemd_says_it_is_active(health, tmp_path, monke
         assert health.machine.router_running() is running
 
 
+def fake_podman(tmp_path, monkeypatch, containers):
+    """A podman listing these containers, as rootless Podman does only once it knows the user's
+    runtime folder, which cron leaves out."""
+    listing = tmp_path / "containers.json"
+    listing.write_text(json.dumps(containers))
+    fake = tmp_path / "bin" / "podman"
+    fake.parent.mkdir(exist_ok=True)
+    fake.write_text(f'#!/bin/sh\n[ "$*" = "ps --all --pod --format json" ] && [ -n "$XDG_RUNTIME_DIR" ] '
+                    f'&& exec cat {listing}\necho "[]"\n')
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake.parent}:{os.environ['PATH']}")
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+
+
+def test_hosted_apps_are_podman_pods_with_the_memory_their_containers_hold(health, tmp_path, monkeypatch):
+    fake_podman(tmp_path, monkeypatch, [
+        {"Names": ["shop-infra"], "PodName": "shop", "IsInfra": True, "State": "running", "Pid": 100},
+        {"Names": ["shop-web"], "PodName": "shop", "IsInfra": False, "State": "running", "Pid": 200},
+        {"Names": ["shop-worker"], "PodName": "shop", "IsInfra": False, "State": "exited", "Pid": 0},
+        {"Names": ["wiki"], "PodName": "", "IsInfra": False, "State": "running", "Pid": 300}])
+    health.proc.process(100, "catatonit", 1, "catatonit", pss_mb=1)
+    health.proc.process(200, "frankenphp", 30, "frankenphp", "run", pss_mb=30)
+    health.proc.process(201, "php", 40, "php", "artisan", ppid=200, pss_mb=40)  # started by the container's process
+    health.proc.process(202, "php", 10, "php", ppid=201, pss_mb=10)  # and by one it started
+    health.proc.process(300, "node", 60, "node", "server.js", pss_mb=60)
+    health.proc.process(400, "node", 99, "node", "elsewhere.js", pss_mb=99)  # not in any container
+
+    assert health.machine.hosted(health.machine.processes()) == [
+        {"name": "shop", "containers": 2, "up": 1, "mb": 80}, {"name": "wiki", "containers": 1, "up": 1, "mb": 60}]
+
+
+def test_without_podman_nothing_is_hosted(health, tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path / "nothing-here"))
+    assert health.machine.hosted({}) == []
+
+
 def test_a_sample_reads_the_whole_machine(health, monkeypatch):
     health.proc.machine(total_mb=8192, available_mb=2048, busy=600, idle=1400)
     monkeypatch.setattr(health.machine, "router_running", lambda: True)
+    monkeypatch.setattr(health.machine, "podman_containers", lambda: [])
     monkeypatch.setattr(health.machine, "disks", lambda folders: [{"mount": "/", "percent": 50.0}])
 
     taken = health.machine.sample([], since=health.machine.CpuTicks(100, 1000))
 
     assert taken["cpu"] == {"percent": 50.0, "load": [0.52, 0.40, 0.35], "cores": os.cpu_count()}
     assert taken["memory"]["percent"] == 75.0 and taken["uptime"] == 47663
-    assert taken["ticks"] == [600, 2000] and taken["sessions"] == [] and taken["router"]
+    assert taken["ticks"] == [600, 2000] and taken["sessions"] == [] and taken["hosted"] == [] and taken["router"]
 
 
 # --- the samples kept ---
@@ -143,7 +180,8 @@ def numbers(when, **shares):
     return {"time": when, "cpu": 10, "ram": 50, "swap": 0, "disk": 40, **shares}
 
 
-def a_sample(when=T0, cpu=10.0, ram=50.0, swap=0.0, disks=(("/", 40.0),), router=True, assistants=(("alice", True),)):
+def a_sample(when=T0, cpu=10.0, ram=50.0, swap=0.0, disks=(("/", 40.0),), router=True, assistants=(("alice", True),),
+             hosted=()):
     """A sample as machine.sample takes it, with these shares."""
     return {"time": when, "uptime": 3600, "cpu": {"percent": cpu, "load": [7.2, 6.8, 5.1], "cores": 4},
             "memory": {"total_mb": 8192, "available_mb": round(8192 * (100 - ram) / 100), "percent": ram},
@@ -151,8 +189,8 @@ def a_sample(when=T0, cpu=10.0, ram=50.0, swap=0.0, disks=(("/", 40.0),), router
             "disks": [{"mount": mount, "total_mb": 102_400, "used_mb": 1024 * full, "free_mb": 1024 * (100 - full),
                        "percent": full} for mount, full in disks],
             "top": [{"name": "Chrome", "mb": 1500, "count": 34}, {"name": "dei_mcp", "mb": 140, "count": 1}],
-            "router": router, "sessions": [{"name": n, "display": n.title(), "running": up} for n, up in assistants],
-            "ticks": [1, 2]}
+            "hosted": list(hosted), "router": router,
+            "sessions": [{"name": n, "display": n.title(), "running": up} for n, up in assistants], "ticks": [1, 2]}
 
 
 def test_a_week_of_samples_is_kept(health):
@@ -336,7 +374,7 @@ def test_a_sample_isnt_taken_while_the_one_before_still_is(sampler):
 
 
 def test_the_terminal_shows_the_machine_now_and_what_was_kept(sampler, monkeypatch):
-    now = a_sample(T0 + 600, disks=(("/", 96.0),))
+    now = a_sample(T0 + 600, disks=(("/", 96.0),), hosted=[{"name": "shop", "containers": 2, "up": 1, "mb": 80}])
     monkeypatch.setattr(sampler.status, "CPU_WINDOW", 0)
     sampler.proc.machine()
     sampler.readings = [a_sample(T0, disks=(("/", 96.0),)), now]
@@ -348,5 +386,6 @@ def test_the_terminal_shows_the_machine_now_and_what_was_kept(sampler, monkeypat
     assert "  Disk /                   96%  96 GB of 100 GB used, 4 GB free" in text
     assert "  Alice's assistant       running" in text
     assert "\n    1.5 GB  Chrome, 34 processes\n" in text
+    assert "\n\nHosted in Podman:\n     80 MB  shop, 1 of 2 containers running\n\n" in text
     assert "Alerts at the last sample, 10 min ago:\n  critical: Disk / 96% full, since " in text
     assert text.endswith("The last day's highs: CPU 10%, memory 50%, disk 96%")

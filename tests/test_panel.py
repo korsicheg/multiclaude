@@ -136,6 +136,7 @@ def keep_a_sample(when, cpu=12.0):
                   "swap": {"total_mb": 0, "used_mb": 0, "percent": 0.0},
                   "disks": [{"mount": "/", "total_mb": 102_400, "used_mb": 40_960, "free_mb": 61_440, "percent": 40.0}],
                   "top": [{"name": "Chrome", "mb": 1500, "count": 34}], "router": True,
+                  "hosted": [{"name": "shop", "containers": 2, "up": 2, "mb": 80}],
                   "sessions": [{"name": "alice", "display": "Alice", "running": True}], "ticks": [600, 2000],
                   "alerts": [{"rule": "router", "level": "high", "since": when, "text": "The router is down"}]})
 
@@ -151,6 +152,7 @@ def test_the_owner_sees_the_machine_and_no_one_else_does(r, panel):
     assert (machine["sample"]["cpu"]["percent"], machine["sample"]["alerts"][0]["text"]) == (12.0, "The router is down")
     assert len(machine["day"]["cpu"]) == 96 and machine["day"]["cpu"][-1] == 12 and machine["day"]["disk"][-1] == 40
     assert machine["limits"] == {"cpu": 90, "ram": 90, "disk": 85}
+    assert machine["sample"]["hosted"] == [{"name": "shop", "containers": 2, "up": 2, "mb": 80}]
     assert "machine" not in last_snapshot(r)
 
 

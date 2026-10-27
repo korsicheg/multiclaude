@@ -322,6 +322,8 @@ function machineSections() {
   else document.getElementById("machine")?.remove();
   if (machine?.sample) section("memory", "Using the most memory", memoryRows(machine.sample.top), memoryNote());
   else document.getElementById("memory")?.remove();
+  if (machine?.sample?.hosted?.length) section("hosted", "Hosted", machine.sample.hosted.map(hostedRow), hostedNote());
+  else document.getElementById("hosted")?.remove();
 }
 
 function machineRows({ sample, day, limits }) {
@@ -402,6 +404,20 @@ function memoryRows(top) {
 
 function memoryNote() {
   return "Each program's processes together, with the memory they share split among them.";
+}
+
+/* An app hosted in Podman: green while all its containers run, amber while some do. */
+function hostedRow({ name, containers, up, mb }) {
+  const noun = containers === 1 ? "container" : "containers";
+  const state = up === containers ? `${containers} ${noun} running`
+    : up ? `${up} of ${containers} ${noun} running` : `${containers} ${noun} stopped`;
+  return el("div", { className: "row" }, el("span", { className: `dot ${up === containers ? "ok" : up ? "warn" : "failed"}` }),
+    el("span", { className: "label" }, name, el("span", { className: "sub" }, state)),
+    up ? el("span", { className: "value" }, size(mb)) : null);
+}
+
+function hostedNote() {
+  return "Apps in Podman containers on this machine: each pod, with the memory its containers hold.";
 }
 
 function meter(label, percent, detail) {

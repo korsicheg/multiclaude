@@ -4,7 +4,7 @@ import time
 
 from multiclaude.health import history, machine
 from multiclaude.health.sample import assistants
-from multiclaude.health.words import duration, load, program, share, size
+from multiclaude.health.words import containers_running, duration, load, program, share, size
 
 CPU_WINDOW = 1  # seconds the CPU is watched, for how busy it is now
 LABEL_WIDTH = 24
@@ -16,7 +16,8 @@ def report():
     before = machine.cpu_ticks(machine.read("stat"))
     time.sleep(CPU_WINDOW)
     now = machine.sample(assistants(), before)
-    return "\n".join([*machine_lines(now), "", *top_lines(now["top"]), "", *kept_lines(history.latest(), now["time"])])
+    parts = [machine_lines(now), top_lines(now["top"]), hosted_lines(now["hosted"]), kept_lines(history.latest(), now["time"])]
+    return "\n\n".join("\n".join(part) for part in parts if part)
 
 
 def machine_lines(sample):
@@ -42,6 +43,12 @@ def running(on):
 
 def top_lines(top):
     return ["Using the most memory:", *(f"  {size(row['mb']):>8}  {program(row)}" for row in top)]
+
+
+def hosted_lines(apps):
+    if not apps:
+        return []
+    return ["Hosted in Podman:", *(f"  {size(app['mb']):>8}  {app['name']}, {containers_running(app)}" for app in apps)]
 
 
 def kept_lines(latest, now):

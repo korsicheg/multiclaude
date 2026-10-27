@@ -1,6 +1,7 @@
 """What the machine looks like now: CPU, memory, swap, disks and uptime, the programs using the most
-memory, and whether the router and each person's assistant are running. The parsers take a /proc
+memory, whether the router and each person's assistant are running, and the apps hosted in Podman. The parsers take a /proc
 file's text, so the tests give them their own; the rest is read under paths.PROC."""
+import json
 import os
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ DISK_FOLDERS = (Path("/"), paths.ROOT, paths.WORKSPACES)  # their file systems a
 ROUTER_UNIT = "assistant-watcher"
 ROUTER_SCRIPT = paths.BIN / "watcher.py"
 SYSTEMCTL_TIMEOUT = 10
+PODMAN_TIMEOUT = 15
 BROWSERS = ("chrome", "chromium", "headless_shell")  # what a browser's processes are called: one program, Chrome
 INTERPRETERS = ("python", "node", "bun", "deno")     # called by the script or module they run instead
 FRONT_DESK = "front desk"
@@ -50,7 +52,7 @@ def sample(people, since=None):
             "cpu": {"percent": cpu_percent(since, ticks) if since else None, "load": load(read("loadavg")),
                     "cores": os.cpu_count() or 1},
             "memory": memory(fields), "swap": swap(fields), "disks": disks(DISK_FOLDERS),
-            "top": top_memory(running), "router": router_running(),
+            "top": top_memory(running), "hosted": hosted(running), "router": router_running(),
             "sessions": [{"name": person.name, "display": person.display, "running": assistant_running(person, running)}
                          for person in people],
             "ticks": list(ticks)}
@@ -258,6 +260,57 @@ def interpreted(args):
         if not arg.startswith("-"):
             return "router" if Path(arg) == ROUTER_SCRIPT else Path(arg).name
     return None
+
+
+# --- apps hosted in Podman ---
+
+class ProcessTree:
+    """The processes running, by the process that started them."""
+
+    def __init__(self, running):
+        self.running = running
+        self.children = defaultdict(list)
+        for process in running.values():
+            self.children[process.ppid].append(process.pid)
+
+    def memory_mb(self, pid):
+        """What a process holds together with everything it started, and they started, and so on."""
+        total, waiting = 0.0, [pid]
+        while waiting:
+            current = waiting.pop()
+            total += self.running[current].memory_mb if current in self.running else 0
+            waiting.extend(self.children.get(current, ()))
+        return total
+
+
+def hosted(running):
+    """The apps hosted in this user's Podman, each pod one app and a container outside any pod one of
+    its own, with how many of its containers run and the memory they hold: [{"name", "containers",
+    "up", "mb"}]; none when Podman isn't installed or can't say."""
+    apps = defaultdict(list)
+    for container in podman_containers():
+        if not container.get("IsInfra"):  # a pod's own placeholder, which runs nothing
+            apps[container.get("PodName") or container["Names"][0]].append(container)
+    tree = ProcessTree(running)
+    return [hosted_app(name, containers, tree) for name, containers in sorted(apps.items())]
+
+
+def hosted_app(name, containers, tree):
+    up = [container for container in containers if container.get("State") == "running"]
+    return {"name": name, "containers": len(containers), "up": len(up),
+            "mb": round(sum(tree.memory_mb(container["Pid"]) for container in up))}
+
+
+def podman_containers():
+    """`podman ps --all --pod`, or [] when Podman isn't installed or fails. Cron leaves out the user's
+    runtime folder, without which rootless Podman may look in the wrong place."""
+    env = {"XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}", **os.environ}
+    try:
+        listed = subprocess.run(["podman", "ps", "--all", "--pod", "--format", "json"], capture_output=True, text=True,
+                                env=env, timeout=PODMAN_TIMEOUT, check=True)
+        return json.loads(listed.stdout or "[]")
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return []
 
 
 # --- the bot's own services ---

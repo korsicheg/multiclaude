@@ -258,7 +258,7 @@ It needs `cloudflared`, which `assistant install` adds, and no Cloudflare accoun
 
 ## Machine health
 
-Cron runs `assistant health sample` every 5 minutes (`assistant install` adds the line). Each sample reads how busy the CPU was since the last one, the load, memory and swap used, each disk, the uptime, the five programs using the most memory, whether the router is running and whether each person's assistant is. A week of samples is kept in `~/assistant/state/health/`.
+Cron runs `assistant health sample` every 5 minutes (`assistant install` adds the line). Each sample reads how busy the CPU was since the last one, the load, memory and swap used, each disk, the uptime, the five programs using the most memory, the apps hosted in Podman (each pod with how many of its containers run and their memory), whether the router is running and whether each person's assistant is. A week of samples is kept in `~/assistant/state/health/`.
 
 The owner gets a Telegram message when one of these goes wrong, and again when it's fine, never in between. The message has the numbers, and for CPU and memory the programs using the most memory, named by whose they are (`claude (ada)`, `Chrome, 34 processes`). The defaults:
 
@@ -279,10 +279,10 @@ The gap between the two numbers keeps a value hovering at the line from sending 
 
 The keys are `cpu`, `ram`, `swap` and `disk` (`at`, `clear`, `samples`, and for disks `critical`, `critical_clear`), `router` and `assistant` (`samples`). The alerts go out like `assistant notify`, straight through Telegram's Bot API, so the owner still hears when the router is what's down. A machine that's off can't say so: then the samples stop, and the control panel's Machine section says how old the last one is.
 
-In the control panel, the owner sees the machine with bars for CPU, memory, swap and each disk, a sparkline of the last 24 hours under CPU, memory and the fullest disk (touch it to read a time), the alerts standing, the router and each assistant, the uptime, and the programs using the most memory. On the machine:
+In the control panel, the owner sees the machine with bars for CPU, memory, swap and each disk, a sparkline of the last 24 hours under CPU, memory and the fullest disk (touch it to read a time), the alerts standing, the router and each assistant, the uptime, the programs using the most memory, and, when the machine hosts apps in Podman, each one with whether it's up and its memory. On the machine:
 
 ```sh
-assistant health                # the machine now, the alerts standing and the last day's highs
+assistant health                # the machine now, its hosted apps, the alerts standing and the last day's highs
 ```
 
 ## Day to day

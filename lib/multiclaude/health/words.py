@@ -27,6 +27,15 @@ def program(row):
     return row["name"] if row["count"] == 1 else f"{row['name']}, {row['count']} processes"
 
 
+def containers_running(app):
+    """A hosted app's containers: 2 containers running, 1 of 3 containers running, 1 container stopped."""
+    count, up = app["containers"], app["up"]
+    noun = "container" if count == 1 else "containers"
+    if up == count:
+        return f"{count} {noun} running"
+    return f"{count} {noun} stopped" if not up else f"{up} of {count} {noun} running"
+
+
 def top_list(top):
     """The top memory users as a Markdown list."""
     return "\n".join(f"- {markdown_literal(program(row))}: {size(row['mb'])}" for row in top)
