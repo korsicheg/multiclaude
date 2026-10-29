@@ -34,6 +34,7 @@ UPGRADE_QUIET = 5 * 60    # a session must have been quiet this long before it's
 # process is never restarted.
 YOUNGEST_RESTART = 60
 SHELL_SNAPSHOT = "/.claude/shell-snapshots/"  # in the command line of every Bash tool command
+SCREENS_KEPT = 20         # saved screens per session; older ones are deleted
 
 
 class Session:
@@ -56,6 +57,8 @@ class Session:
         self.last_pid_check = 0.0
         self.upgrade_tried = None      # the Claude Code version the last update restart was meant to bring
         self.session_switches = {}     # /model and /effort set for this session only, put back after a restart
+        self.box_hidden_since = None   # when queued work first found the message box hidden (work.serve)
+        self.box_hidden_told = False   # whether the person has heard why it waits
         self.pending_login = None      # {"server", "inbox"} while /mcp login waits for the redirect URL
         self.approval = None           # an approval dialog relayed to the person (router/approvals.py)
         self.stop_requested = False    # /stop came; the worker presses Escape (work.stop)
@@ -86,7 +89,10 @@ class Session:
             if on_entry:
                 on_entry(entry)
             self.turn.handle(entry)
-        self.turn.stuck(now, self.tail.latest_subagent_write)
+        if self.approval:
+            self.turn.postpone_stuck(now)  # it waits for the person's tap, not stuck
+        if self.turn.stuck(now, self.tail.latest_subagent_write):
+            self.save_screen("stuck")
         return entries
 
     def idle(self):
@@ -216,6 +222,27 @@ class Session:
             time.sleep(POLL)
         log(f"{self.name}: claude didn't come back after /restart")
         return False
+
+    def save_screen(self, why):
+        """Keep what the terminal shows now in paths.SCREENS, for the owner to see what held it up."""
+        folder = paths.SCREENS / self.name
+        path = folder / f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{why}.txt"
+        try:
+            text = self.pane.screen()
+            folder.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+            for old in sorted(folder.glob("*.txt"))[:-SCREENS_KEPT]:
+                old.unlink()
+        except (subprocess.SubprocessError, OSError) as e:
+            log(f"{self.name}: can't save its screen ({why}): {e}")
+            return
+        log(f"{self.name}: saved its screen ({why}) to {path}")
+
+    def message_box_shown(self):
+        try:
+            return claude_ui.message_box_shown(self.pane.screen())
+        except (subprocess.SubprocessError, OSError):
+            return False
 
     # --- typing into it ---
 

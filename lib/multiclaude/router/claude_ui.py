@@ -87,6 +87,9 @@ PANEL_BORDER = "│"
 PANEL_MIN_COLUMN = 40     # nearer the left, a │ belongs to what's on screen, not to a panel
 PANEL_MIN_SHARE = 0.5     # of the lines wide enough to reach the border's column
 WIDE_CHAR_SLACK = 8       # an emoji is one character but two columns: the border moves left
+# Once files have changed, the panel shows their diff and has no border: a dialog's rules then
+# stop short of it, and the diff runs on beside every line of the dialog.
+MAIN_RULE_RE = re.compile(r"^([─╌]{20,})")
 
 
 @dataclass(frozen=True)
@@ -108,9 +111,12 @@ def without_side_panel(screen):
     """The screen with the panel on its right, if one is open, cut off."""
     lines = screen.splitlines()
     border = side_panel_border(lines)
-    if border is None:
-        return screen
-    return "\n".join(cut_at_border(line, border) for line in lines)
+    if border is not None:
+        return "\n".join(cut_at_border(line, border) for line in lines)
+    edge = borderless_panel_edge(lines)
+    if edge is not None:
+        return "\n".join(line[:edge].rstrip() for line in lines)
+    return screen
 
 
 def side_panel_border(lines):
@@ -127,6 +133,16 @@ def side_panel_border(lines):
 def cut_at_border(line, border):
     at = line.rfind(PANEL_BORDER, max(border - WIDE_CHAR_SLACK, 0), border + 1)
     return line[:at].rstrip() if at != -1 else line
+
+
+def borderless_panel_edge(lines):
+    """Where a panel without a border starts, or None: the column the rules starting the
+    screen's lines stop at, when text runs on past it."""
+    widths = [len(m[1]) for line in lines if (m := MAIN_RULE_RE.match(line))]
+    if not widths:
+        return None
+    edge = max(widths)
+    return edge if any(line[edge:].strip() for line in lines) else None
 
 
 def approval_dialog(screen):
@@ -188,14 +204,24 @@ def choose(pane, dialog, word):
 PROMPT = "❯"
 
 
-def message_box(screen):
-    """The text in the message box, "" when it's empty."""
+def message_box_lines(screen):
+    """The lines between the screen's last two rules, where the message box sits; [] without two rules."""
     lines = without_side_panel(screen).splitlines()
     rules = [i for i, line in enumerate(lines) if RULE_RE.match(line.strip())]
-    if len(rules) < 2:
-        return ""
-    box = "\n".join(line.strip() for line in lines[rules[-2] + 1:rules[-1]])
+    return lines[rules[-2] + 1:rules[-1]] if len(rules) >= 2 else []
+
+
+def message_box(screen):
+    """The text in the message box, "" when it's empty."""
+    box = "\n".join(line.strip() for line in message_box_lines(screen))
     return box.removeprefix(PROMPT).strip()
+
+
+def message_box_shown(screen):
+    """Whether the message box is on screen to type into. A dialog, the router's to relay or one
+    it can't read, takes its place, and keys typed there would answer it."""
+    box = message_box_lines(screen)
+    return bool(box) and box[0].startswith(PROMPT)
 
 
 def holds_typed_message(screen):

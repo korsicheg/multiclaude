@@ -14,6 +14,7 @@ from multiclaude.router import approvals, switching
 from multiclaude.router.session import DialogOpen
 
 DELIVER_TIMEOUT = 120  # how long work waits for a (re)starting assistant
+BOX_HIDDEN_TELL = 60   # how long work waits for a hidden message box before the person hears why
 POLL = 0.5
 DELETE_BATCH = 100     # deleteMessages takes up to 100 ids
 CLEAR_WAITS = ("🧹 I'll clear once I finish what I'm doing. Tap **Cancel** to keep everything, "
@@ -236,8 +237,28 @@ def serve(user, now):
                 continue
             user.ensure_started(now)
             return
+        if work.needs_assistant and not user.message_box_shown():
+            wait_for_box(user, now)
+            return
+        user.box_hidden_since = None
         if not work.run(user, now):
             return
+
+
+def wait_for_box(user, now):
+    """Something stands where the message box was, and keys typed into it could answer it: an
+    approval dialog, which the worker relays, or one the router can't read. After
+    BOX_HIDDEN_TELL with no question out, the person hears why their work waits, once."""
+    if user.box_hidden_since is None:
+        user.box_hidden_since, user.box_hidden_told = now, False
+    if user.approval or user.box_hidden_told or now - user.box_hidden_since < BOX_HIDDEN_TELL:
+        return
+    user.box_hidden_told = True
+    log(f"{user.name}: the message box has been hidden for {now - user.box_hidden_since:.0f}s")
+    user.save_screen("box-hidden")
+    user.say(f"⚠️ Your message is waiting: something on {bot.name()}'s screen is in the way, perhaps a "
+             "question that can't be passed on to you. Send `/stop` to clear it, or run `assistant status` "
+             "on the VM.")
 
 
 def stop(session):
@@ -372,7 +393,7 @@ class Worker:
         if session.restart_requested:
             session.restart_requested = False
             restart_fresh(session, now)
-        if (self.watches_approvals and (session.turn.busy or session.approval)
+        if (self.watches_approvals and (session.turn.busy or session.turn.stalled or session.approval or session.queue)
                 and (session.approval and session.approval.answer or now - self.last_check >= approvals.CHECK_EVERY)):
             self.last_check = now
             approvals.check(session)

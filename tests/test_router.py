@@ -252,12 +252,33 @@ def test_session_start_forgets_a_turn_that_went_quiet_long_ago(r, tmp_path):
     assert not session(r, tmp_path).turn.busy
 
 
-def test_session_read_reports_a_stuck_turn(r, tmp_path):
+def test_session_read_reports_a_stuck_turn_and_saves_its_screen(r, tmp_path):
     s = session(r, tmp_path)
     s.turn.busy, s.turn.last_write = True, time.time() - r.session.STALE_AFTER - 1
     s.read(time.time())
     assert not s.turn.busy
     assert "no progress on your request for 15 minutes" in s.turn.notice
+    [saved] = (r.paths.SCREENS / "alice").iterdir()
+    assert saved.name.endswith("-stuck.txt") and saved.read_text() == captured("message-box-empty.txt")
+
+
+def test_a_turn_waiting_on_an_approval_is_not_stuck(r, tmp_path):
+    s = session(r, tmp_path)
+    s.turn.busy, s.turn.last_write = True, time.time() - r.session.STALE_AFTER - 1
+    s.approval = r.work.approvals.Pending(901, [], "Bash command")
+    s.read(time.time())
+    assert s.turn.busy and s.turn.notice is None
+
+
+def test_only_a_few_screens_are_kept(r, tmp_path):
+    s = session(r, tmp_path)
+    folder = r.paths.SCREENS / "alice"
+    folder.mkdir(parents=True)
+    for n in range(r.session.SCREENS_KEPT):
+        (folder / f"20261001T0000{n:02d}Z-stuck.txt").write_text("old")
+    s.save_screen("stuck")
+    kept = sorted(folder.iterdir())
+    assert len(kept) == r.session.SCREENS_KEPT and kept[0].name == "20261001T000001Z-stuck.txt"
 
 
 def test_a_subagent_still_writing_is_not_stuck(r, tmp_path):
@@ -1434,6 +1455,25 @@ def test_a_dialog_beside_a_borderless_panel_is_read_alone(r):
     assert r.claude_ui.approval_dialog(blinked(captured(BORDERLESS))) == dialog
 
 
+def test_a_dialog_beside_the_diff_of_changed_files_is_read(r):
+    # Beside the diff, which runs down past "Do you want to proceed?", two dialogs went unseen and
+    # the person's next messages answered them (29 Oct 2026).
+    dialog = r.claude_ui.approval_dialog(captured("approval-dialog-diff-panel.txt"))
+
+    assert dialog.text == ("Bash command\nRun gated close for ticket DEMO-12\nbin/gated close DEMO-12 2>&1 | tail -5\n"
+                           "Permission rule Bash(bin/gated:*) requires confirmation for this command.\n"
+                           "/permissions to update rules")
+    assert dialog.options == ((True, "Yes"), (False, "No"))
+
+
+@pytest.mark.parametrize("name, shown", [
+    ("message-box-empty.txt", True), ("message-put-back.txt", True), ("message-box-diff-panel.txt", True),
+    ("approval-dialog.txt", False), ("approval-dialog-diff-panel.txt", False), (BORDERLESS, False)])
+def test_the_message_box_is_shown_only_when_nothing_stands_in_its_place(r, name, shown):
+    assert r.claude_ui.message_box_shown(captured(name)) is shown
+    assert not r.claude_ui.message_box_shown("")
+
+
 def test_a_dialog_without_its_rule_stops_at_the_conversation(r):
     screen = "\n".join(line for line in captured(BORDERLESS).splitlines() if not line.startswith("───"))
     dialog = r.claude_ui.approval_dialog(screen)
@@ -1581,6 +1621,42 @@ def test_nothing_is_typed_into_an_open_dialog(r, desk, dialog_on_screen, monkeyp
 
     worker.step(time.time())  # relays it, and waits
     assert alice.approval and len(alice.queue) == 1 and r.keystrokes == []
+
+
+def test_a_dialog_that_opens_after_the_turn_looked_stuck_is_still_relayed(r, desk, dialog_on_screen):
+    alice = dialog_on_screen.alice
+    alice.turn.busy, alice.turn.stalled = False, True
+
+    dialog_on_screen.worker.step(time.time())
+
+    assert alice.approval and "Approve it?" in sent(r, ALICE_CHAT)[-1]
+
+
+def unreadable(screen):
+    """screen with a dialog the router doesn't know how to read."""
+    return screen.replace("Do you want to proceed?", "Shall I go ahead?")
+
+
+def test_nothing_is_typed_while_something_unreadable_hides_the_box_and_the_person_hears_why(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    screen = SimpleNamespace(now=unreadable(captured("approval-dialog.txt")))
+    monkeypatch.setattr(alice.pane, "screen", lambda: screen.now)
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    alice.queue = [deliver(r, "[Telegram from Alice · msg 1 · 2026-10-29 16:07 UTC]", "1")]
+    worker, start = r.work.Worker(alice), time.time()
+
+    for later in (0, r.work.BOX_HIDDEN_TELL - 1, r.work.BOX_HIDDEN_TELL, r.work.BOX_HIDDEN_TELL * 3):
+        worker.step(start + later)
+
+    assert r.keystrokes == [] and len(alice.queue) == 1 and alice.approval is None
+    told = [text for text in sent(r, ALICE_CHAT) if "Your message is waiting" in text]
+    assert len(told) == 1 and "/stop" in told[0]
+    [saved] = (r.paths.SCREENS / "alice").iterdir()
+    assert saved.name.endswith("-box-hidden.txt")
+
+    screen.now = captured("message-box-empty.txt")
+    worker.step(start + r.work.BOX_HIDDEN_TELL * 4)
+    assert alice.queue == [] and alice.box_hidden_since is None
 
 
 def test_the_front_desk_is_never_watched_for_dialogs(r, desk, monkeypatch):

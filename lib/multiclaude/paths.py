@@ -37,6 +37,8 @@ TAKEOVERS = STATE / "takeovers"
 # The machine's health, written by `assistant health sample` (health/): the latest sample, a week of
 # them, and where each alert stands.
 HEALTH = STATE / "health"
+# What an assistant's terminal showed when something held it up, <name>/<time>-<why>.txt (session.py).
+SCREENS = STATE / "screens"
 
 PROJECTS = CLAUDE_DIR / "projects"
 USER_SETTINGS = CLAUDE_DIR / "settings.json"

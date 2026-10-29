@@ -422,6 +422,9 @@ def tg(tmp_path, bot_api):
 
 # --- the router (test_router.py, test_panel.py) ---
 
+EMPTY_BOX = (Path(__file__).parent / "fixtures" / "message-box-empty.txt").read_bytes()  # an idle assistant's screen
+
+
 @pytest.fixture
 def r(tmp_path, monkeypatch):
     """The router's modules with every location in tmp_path, and tmux and the Bot API recorded."""
@@ -445,7 +448,8 @@ def r(tmp_path, monkeypatch):
 
     def run_tmux(*args, stdin=None):
         r.keystrokes.append((args, stdin))
-        return subprocess.CompletedProcess(args, 0, b"", b"")
+        shown = EMPTY_BOX if args[0] == "capture-pane" else b""
+        return subprocess.CompletedProcess(args, 0, shown, b"")
 
     bot = RecordingBot()
     monkeypatch.setattr(telegram, "bot", lambda: bot)

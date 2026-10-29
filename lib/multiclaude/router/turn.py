@@ -50,6 +50,7 @@ class Turn:
         self.notice = None       # a problem to tell the person about; the desk sends it
         self.failed = None       # a Failure the desk hasn't dealt with yet (recovery.py)
         self.model = None        # the model of its latest reply (the model-fallback add-in reads it)
+        self.stalled = False     # judged stuck, and nothing written since: a dialog may still open
 
     def end(self):
         self.busy = self.in_turn = False
@@ -65,6 +66,7 @@ class Turn:
         self.busy, self.last_write = True, now
 
     def handle(self, entry):
+        self.stalled = False
         kind = entry.get("type")
         if kind == "queue-operation":
             self.busy = True
@@ -105,14 +107,16 @@ class Turn:
         self.last_write = max(self.last_write, now)
 
     def stuck(self, now, latest_subagent_write):
-        """End a turn that has written nothing for STALE_AFTER, subagents included."""
+        """End a turn that has written nothing for STALE_AFTER, subagents included. Whether it did."""
         if not self.busy or now - self.last_write <= STALE_AFTER:
-            return
+            return False
         self.last_write = max(self.last_write, latest_subagent_write())
         if now - self.last_write <= STALE_AFTER:
-            return
+            return False
         log(f"{self.name}: turn looks stuck; stopping typing")
         self.end()
+        self.stalled = True
         self.notice = (f"⚠️ {bot.name()} has shown no progress on your request for {STALE_AFTER // 60} minutes, "
                        "so it may be stuck. If you don't hear back soon, send `/clear` or run "
                        "`assistant status` on the VM.")
+        return True
