@@ -420,6 +420,55 @@ def test_notify_succeeds_when_tg_holds_the_message_for_later(home, monkeypatch):
     assert len(list((home.root / "state" / "outbox" / ALICE_CHAT).glob("*.json"))) == 1
 
 
+# --- assistants asleep while idle ------------------------------------------------------------------
+
+@pytest.fixture
+def no_sessions(home):
+    """home with no tmux session running; the tmux commands asked for are home.tmux()."""
+    (home.fake.bin / "tmux").write_text('#!/bin/sh\necho "$*" >> "$FAKE_CLAUDE_DIR/tmux.log"\n'
+                                        '[ "$3" = has-session ] && exit 1\nexit 0\n')
+    home.tmux = lambda: [line.split()[2:] for line in (home.fake.home / "tmux.log").read_text().splitlines()
+                         if "has-session" not in line]
+    (home.home / "workspaces" / "bob").mkdir()
+    users = json.loads((home.root / "users.json").read_text())
+    (home.root / "users.json").write_text(json.dumps({**users, "bob": {"telegram_id": "101", "display": "Bob"}}))
+    (home.root / "state" / "asleep").mkdir(parents=True)
+    (home.root / "state" / "asleep" / "alice").write_text("1794218400\n")
+    return home
+
+
+def test_start_users_leaves_an_assistant_put_to_sleep_be(no_sessions):
+    r = no_sessions.run("start-users")
+
+    assert r.returncode == 0, r.stderr
+    (started,) = no_sessions.tmux()
+    assert started[:3] == ["new-session", "-d", "-s"] and started[3] == "u-bob" and started[-1] == "bob"
+
+
+def test_wake_starts_a_sleeping_assistant_and_it_no_longer_counts_as_asleep(no_sessions):
+    r = no_sessions.run("wake", "alice")
+
+    assert r.returncode == 0, r.stderr
+    (started,) = no_sessions.tmux()
+    assert started[3] == "u-alice" and started[-2:] == [str(no_sessions.root / "bin" / "run-user.sh"), "alice"]
+    assert not (no_sessions.root / "state" / "asleep" / "alice").exists()
+
+
+def test_wake_fresh_starts_it_on_a_new_conversation_as_restart_asks(no_sessions):
+    no_sessions.run("wake", "alice", "fresh")
+
+    assert no_sessions.tmux()[0][-2:] == ["alice", "fresh"]
+
+
+def test_status_and_attach_say_that_an_assistant_is_asleep(no_sessions):
+    status = no_sessions.run("status")
+    attach = no_sessions.run("attach", "alice")
+
+    assert "  alice: Alice, Telegram 100, owner, assistant asleep while idle (their next message wakes it)" in status.stdout
+    assert "  bob: Bob, Telegram 101, null, assistant NOT running" in status.stdout
+    assert attach.returncode == 1 and "asleep while idle; start it with: assistant wake alice" in attach.stderr
+
+
 # --- the machine's health -------------------------------------------------------------------------
 
 @pytest.fixture

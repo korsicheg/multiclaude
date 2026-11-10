@@ -297,6 +297,21 @@ def test_an_assistant_alerts_once_it_has_been_missing_for_two_samples(health):
                                  "for 10 min, so Bob's messages wait.")
 
 
+def test_an_assistant_put_to_sleep_while_idle_is_not_missing(health, monkeypatch):
+    from multiclaude import asleep
+    asleep.mark("bob")
+    monkeypatch.setattr(health.machine, "assistant_running", lambda person, running: person.name == "alice")
+    people = [SimpleNamespace(name=name, display=name.title()) for name in ("alice", "bob", "carol")]
+
+    sessions = [health.machine.session(person, {}) for person in people]
+
+    assert [(s["running"], s["asleep"]) for s in sessions] == [(True, False), (False, True), (False, False)]
+    sample = {**a_sample(), "sessions": sessions}
+    told = changes_over(health, sample, sample, sample)
+    assert [len(texts) for texts in told] == [0, 1, 0] and told[1][0].startswith("⚠️ **Carol's assistant isn't running**")
+    assert "  Bob's assistant         asleep" in "\n".join(health.status.machine_lines(sample))
+
+
 def test_the_owner_can_change_the_thresholds_in_config_json(health):
     write_json(health.paths.CONFIG, {"health": {"ram": {"at": 97, "samples": 1, "colour": 1}, "disk": {"at": "lots"},
                                                 "cpu": "off"}})

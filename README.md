@@ -189,6 +189,16 @@ Run `assistant relay deploy` again after a change in `relay/`, and after turning
 
 The bot calls itself by its Telegram name, saved as `name` in `config.json`. To change it, edit `name` there (`aka` adds a second name, shown next to it), then run `assistant install`, which writes it into the assistants' rules, and `sudo systemctl restart assistant-watcher`, which updates the bot's description.
 
+### A machine short of memory
+
+Each person's assistant holds 350 to 600 MB while it runs, whether or not anyone talks to it. To have idle ones put to sleep, add to `~/assistant/config.json`:
+
+```json
+{"hibernate_after_minutes": 30}
+```
+
+The router reads it within a minute, with no restart. An assistant that has been idle that long has its whole tmux session ended, and the person's next message starts it again with its conversation: that first answer takes some seconds longer, with "typing…" showing meanwhile, and their session-only `/model` and `/effort` are put back first. An assistant stays up while it works, while a command or a program it listed with `assistant background` runs, and while it has something scheduled inside Claude Code (CronCreate, `/loop`), which only a running session carries out; scheduled jobs in the crontab never need the session. `assistant status`, `assistant health`, `/usage` and the control panel show such an assistant as asleep, the health alerts don't count it as missing, and `assistant wake <name>` starts it by hand, before `assistant attach <name>` say. Without the setting nobody is put to sleep.
+
 ## Add-ins
 
 ```sh
@@ -271,7 +281,7 @@ The owner gets a Telegram message when one of these goes wrong, and again when i
 | Swap used | 50% or more for 3 samples | under 40% |
 | A disk (`/`, and the repo's or the workspaces' if elsewhere) | 85% full, and again at 95% | under 80% |
 | The router (`assistant-watcher`) | not running, at once | running |
-| A person's assistant | no Claude Code in its tmux session for 2 samples | running |
+| A person's assistant | no Claude Code in its tmux session for 2 samples, unless it was put to sleep while idle | running |
 
 The gap between the two numbers keeps a value hovering at the line from sending a message every 5 minutes. To change any of them, add a `"health"` section to `~/assistant/config.json` with only what you change; the next sample uses it:
 
@@ -294,7 +304,8 @@ assistant help                  # every command
 assistant status                # services, pairing, people, the front desk's last lines
 assistant attach [<name>]       # watch someone's assistant (or the front desk); leave with Ctrl-b d
 assistant start|stop|restart    # front desk, every assistant and the router
-assistant start-users           # start any person's assistant that isn't running
+assistant start-users           # start any person's assistant that isn't running, unless it's asleep while idle
+assistant wake <name>           # start an assistant that was put to sleep while idle
 assistant notify [--user <name>] "text"         # a Telegram message to one person (default: the owner)
 assistant background [--user <name>] <pid> "what"   # a process an assistant runs in the background, for /stop to end
 assistant job [--user <name>] [--model <m>] [--deny <tools>] "instructions"   # a one-shot task whose answer goes to that person
@@ -316,7 +327,7 @@ assistant addon list|enable|disable
 These files hold secrets or per-person data, and `.gitignore` keeps them out. Back them up separately if you want a full restore. The [backup](addons/backup/README.md) add-in does that every night:
 
 - `~/assistant/.env`: the API key and proxy address, if any
-- `~/assistant/config.json`: the bot's name and the add-ins that are on
+- `~/assistant/config.json`: the bot's name, the add-ins that are on and the owner's other settings
 - `~/.claude/channels/telegram/`: the bot token (`.env`) and the access allowlist (`access.json`)
 - `~/assistant/users.json`: people, their Telegram ids, roles and timezones, and the add-ins' fields
 - `~/assistant/state/`: secrets (`cloudflare.json`, `relay.json`, and the add-ins' own), the router's state (message ids for `/clear`, held messages, open questions, what was shared) and a week of the machine's health

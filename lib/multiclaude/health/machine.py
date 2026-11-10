@@ -10,7 +10,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import NamedTuple
 
-from multiclaude import paths, tmux
+from multiclaude import asleep, paths, tmux
 
 BYTES_PER_MB = 1024 * 1024
 KB_PER_MB = 1024
@@ -53,8 +53,7 @@ def sample(people, since=None):
                     "cores": os.cpu_count() or 1},
             "memory": memory(fields), "swap": swap(fields), "disks": disks(DISK_FOLDERS),
             "top": top_memory(running), "hosted": hosted(running), "router": router_running(),
-            "sessions": [{"name": person.name, "display": person.display, "running": assistant_running(person, running)}
-                         for person in people],
+            "sessions": [session(person, running) for person in people],
             "ticks": list(ticks)}
 
 
@@ -321,6 +320,12 @@ def router_running():
         return subprocess.run(["systemctl", "is-active", "--quiet", ROUTER_UNIT], timeout=SYSTEMCTL_TIMEOUT).returncode == 0
     except (subprocess.SubprocessError, OSError):
         return False
+
+
+def session(person, running):
+    """A person's assistant: whether it runs, or was put to sleep while idle (asleep.py)."""
+    up = assistant_running(person, running)
+    return {"name": person.name, "display": person.display, "running": up, "asleep": not up and asleep.marked(person.name)}
 
 
 def assistant_running(person, running):

@@ -3,7 +3,8 @@ high, or for a disk critical), kept in alerts.json, and the owner gets a message
 a level or back to fine, never while it stays put. A share goes up after `samples` samples in a row
 at or over its `at` (or `critical`), and goes down at once, but only under its `clear` (or
 `critical_clear`), so a value hovering at a line doesn't flap. The router and each person's
-assistant are high while they aren't running. The owner may change any of DEFAULTS under "health"
+assistant are high while they aren't running; an assistant put to sleep while idle (asleep.py)
+isn't down. The owner may change any of DEFAULTS under "health"
 in config.json: {"health": {"ram": {"at": 95, "samples": 2}}}."""
 from dataclasses import asdict, dataclass, replace
 from typing import NamedTuple
@@ -273,7 +274,8 @@ class Assistant(Outage):
         self.key = f"assistant:{name}"
 
     def down(self, sample):
-        return not next(session["running"] for session in sample["sessions"] if session["name"] == self.name)
+        session = next(session for session in sample["sessions"] if session["name"] == self.name)
+        return not (session["running"] or session.get("asleep"))
 
     def alert(self, sample, level):
         whose = markdown_literal(self.display)

@@ -41,6 +41,11 @@ HEALTH = STATE / "health"
 SCREENS = STATE / "screens"
 # Work an assistant runs in the background that /stop ends too, <name>/<pid>.json (background.py).
 BACKGROUND = STATE / "background"
+# The assistants put to sleep while idle, a file per person holding when (asleep.py).
+ASLEEP = STATE / "asleep"
+# When each assistant last scheduled something inside Claude Code (CronCreate, /loop), <name>: it
+# goes with the claude process, so a session that has is never put to sleep (router/session.py).
+SESSION_TASKS = STATE / "session-tasks"
 
 PROJECTS = CLAUDE_DIR / "projects"
 USER_SETTINGS = CLAUDE_DIR / "settings.json"

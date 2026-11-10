@@ -28,5 +28,9 @@ bot_name() { jq -r '.name // empty' "$CONFIG" 2>/dev/null | grep . || echo Claud
 addon_on() { jq -e --arg name "$1" '.addons // [] | any(. == $name)' "$CONFIG" >/dev/null 2>&1; }
 owner_name() { jq -r 'to_entries[] | select(.value.role == "owner") | .key' "$USERS" 2>/dev/null | head -1; }
 
+# asleep NAME: whether NAME's assistant was put to sleep while idle and hasn't been woken since
+# (lib/multiclaude/asleep.py).
+asleep() { [ -e "$ROOT/state/asleep/$1" ]; }
+
 # The folder where Claude Code keeps the transcripts of sessions started in a folder.
 project_dir() { printf '%s/.claude/projects/%s' "$HOME" "$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g')"; }

@@ -51,5 +51,9 @@ class Pane:
         """Kill whatever runs in the pane and run command there instead."""
         run("respawn-pane", "-k", "-t", self.target, *command)
 
+    def kill(self):
+        """End the tmux session and everything running in it."""
+        run("kill-session", "-t", f"={self.session}")
+
     def shell_pid(self):
         return run("display-message", "-p", "-t", self.target, "#{pane_pid}").stdout.decode().strip()

@@ -34,9 +34,10 @@ def current(user, setting):
             f"{label}: {', '.join(names)}")
 
 
-def switch(user, setting, target, keep, quiet=False):
+def switch(user, setting, target, keep, quiet=False, came_back="restarted for a Claude Code update"):
     """Switch it in the assistant's terminal and tell the person how it went. quiet: putting a
-    session-only switch back after an update restart, so only a failure is reported."""
+    session-only switch back after the session came back (an update restart, or waking up), so
+    only a failure is reported."""
     try:
         result, warned = user.switch(setting, target)
     except (subprocess.SubprocessError, OSError) as e:
@@ -44,7 +45,7 @@ def switch(user, setting, target, keep, quiet=False):
     log(f"{user.name}: /{setting} {target}: {result}")
     if not result.startswith(SWITCHED):
         problem = result.replace("`", "")
-        user.say(f"⚠️ {bot.name()} restarted for a Claude Code update and couldn't switch its "
+        user.say(f"⚠️ {bot.name()} {came_back} and couldn't switch its "
                  f"{setting} back to {target}: {problem}" if quiet
                  else f"⚠️ Couldn't switch {setting}: {problem}")
         return

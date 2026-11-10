@@ -340,19 +340,45 @@ cmd_add_user() {
   echo "Added $display ($name, Telegram id $id): workspace $ws, terminal: assistant attach $name"
 }
 
-# Make sure every user's assistant session is running (idempotent).
+# Make sure every user's assistant session is running (idempotent), apart from those put to sleep
+# while idle, which the router wakes for their person's next message.
 cmd_start_users() {
   local names name failed=0
   names=$(jq -r 'keys[]' "$USERS") || die "can't read $USERS"
   for name in $names; do
     [ -d "$HOME/workspaces/$name" ] || continue
-    tm has-session -t "=u-$name" 2>/dev/null && continue
-    # The router may start the same session at the same moment; losing that race is fine.
-    tm new-session -d -s "u-$name" "${TMUX_SIZE[@]}" "$ROOT/bin/run-user.sh" "$name" 2>/dev/null ||
-      tm has-session -t "=u-$name" 2>/dev/null ||
-      { echo "error: couldn't start the assistant for $name" >&2; failed=1; }
+    asleep "$name" && continue
+    start_user "$name" || failed=1
   done
   return "$failed"
+}
+
+# start_user NAME [fresh]: NAME's assistant in its tmux session, unless it runs already; with
+# fresh, on a new conversation.
+start_user() {
+  local name=$1
+  tm has-session -t "=u-$name" 2>/dev/null && return 0
+  # The router may start the same session at the same moment; losing that race is fine.
+  tm new-session -d -s "u-$name" "${TMUX_SIZE[@]}" "$ROOT/bin/run-user.sh" "$@" 2>/dev/null ||
+    tm has-session -t "=u-$name" 2>/dev/null ||
+    { echo "error: couldn't start the assistant for $name" >&2; return 1; }
+}
+
+# Start an assistant that was put to sleep while idle ("hibernate_after_minutes" in config.json).
+# The router does this for its person's next message, with fresh for their /restart.
+cmd_wake() {
+  local name="${1:-}"
+  [ -n "$name" ] && [ -d "$HOME/workspaces/$name" ] || die "usage: assistant wake <name>"
+  rm -f "$ROOT/state/asleep/$name"
+  start_user "$name" ${2:+"$2"}
+}
+
+cmd_attach() {
+  if [ -z "${1:-}" ]; then tm attach -t =assistant; return; fi
+  if asleep "$1" && ! tm has-session -t "=u-$1" 2>/dev/null; then
+    die "$1's assistant is asleep while idle; start it with: assistant wake $1"
+  fi
+  tm attach -t "=u-$1"
 }
 
 cmd_status() {
@@ -367,7 +393,9 @@ cmd_status() {
   fi
   echo "Users:"
   for name in $(jq -r 'keys[]' "$USERS" 2>/dev/null); do
-    if tm has-session -t "=u-$name" 2>/dev/null; then state="running"; else state="NOT running"; fi
+    if tm has-session -t "=u-$name" 2>/dev/null; then state="running"
+    elif asleep "$name"; then state="asleep while idle (their next message wakes it)"
+    else state="NOT running"; fi
     jq -r --arg n "$name" --arg s "$state" '.[$n] | "  \($n): \(.display), Telegram \(.telegram_id), \(.role), assistant \($s)"' "$USERS"
   done
   echo "Scheduled jobs: $(crontab -l 2>/dev/null | grep -c 'assistant job' || true)"
@@ -734,7 +762,11 @@ assistant pair <code> [<name> ["Display Name"]]
                                 person's own assistant when a name is given
 assistant add-user <name> <telegram id> ["Display Name"]
                                 Give an already-allowed Telegram user their own assistant
-assistant start-users           Start any user assistant that isn't running
+assistant start-users           Start any user assistant that isn't running, unless it was put
+                                to sleep while idle
+assistant wake <name>           Start a user's assistant that was put to sleep while idle
+                                ("hibernate_after_minutes" in config.json), as their next
+                                message does
 assistant job [--user <name>] [--tools <tools>] [--deny <tools>] [--model <model>] "<task>"
                                 Run a one-shot task in that user's workspace and send them
                                 the result (used by cron; default user: the owner); with
@@ -773,10 +805,11 @@ case "${1:-help}" in
   setup)   cmd_setup ;;
   pair)    shift; cmd_pair "$@" ;;
   status)  cmd_status ;;
-  attach)  if [ -n "${2:-}" ]; then tm attach -t "=u-$2"; else tm attach -t =assistant; fi ;;
+  attach)  cmd_attach "${2:-}" ;;
   invite)  shift; cmd_invite "$@" ;;
   add-user) shift; cmd_add_user "$@" ;;
   start-users) cmd_start_users ;;
+  wake)    shift; cmd_wake "$@" ;;
   start|stop|restart) sudo systemctl "$1" assistant ;;
   job)     shift; cmd_job "$@" ;;
   notify)  shift; cmd_notify "$@" ;;

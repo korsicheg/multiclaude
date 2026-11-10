@@ -430,10 +430,11 @@ EMPTY_BOX = (Path(__file__).parent / "fixtures" / "message-box-empty.txt").read_
 def r(tmp_path, monkeypatch):
     """The router's modules with every location in tmp_path, and tmux and the Bot API recorded."""
     fresh_multiclaude_in(tmp_path, monkeypatch)
-    from multiclaude import paths, telegram, tmux
-    from multiclaude.router import (about, asks, claude_ui, desk, inbound, limits, plugins, poller, recovery, session,
-                                    switching, upgrade, usage, work)
+    from multiclaude import asleep, paths, telegram, tmux
+    from multiclaude.router import (about, asks, claude_ui, desk, hibernate, inbound, limits, plugins, poller, recovery,
+                                    session, switching, upgrade, usage, work)
     r = SimpleNamespace(paths=paths, telegram=telegram, tmux=tmux, about=about, asks=asks, claude_ui=claude_ui, desk=desk,
+                        asleep=asleep, hibernate=hibernate,
                         messages=inbound, limits=limits, plugins=plugins, poller=poller, recovery=recovery, session=session,
                         switching=switching, upgrade=upgrade, usage=usage, work=work,
                         api_calls=[], keystrokes=[], unreachable=False)
