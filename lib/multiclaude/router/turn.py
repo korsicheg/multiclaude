@@ -37,6 +37,14 @@ def interrupted(entry):
     return any(isinstance(b, dict) and str(b.get("text") or "").startswith(INTERRUPTED_MARKER) for b in blocks)
 
 
+def telling(entry):
+    """Whether an entry says something about a turn: one Turn.handle acts on. Starting up, a
+    session's transcript is read back to the latest of these (Tail.recent)."""
+    kind = entry.get("type")
+    return (kind in ("queue-operation", "assistant") or kind == "system" and entry.get("subtype") == "turn_duration"
+            or kind == "user" and (bool(entry.get("queueTranscriptOnly")) or interrupted(entry)))
+
+
 class Turn:
     """One session's work: busy from a queued message until the turn that handles it ends."""
 

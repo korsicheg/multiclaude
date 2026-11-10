@@ -10,7 +10,7 @@ from multiclaude.channels import TelegramChat
 from multiclaude.log import log
 from multiclaude.router import claude_ui, recovery
 from multiclaude.router.transcript import CLEAR_MARKER, INTERRUPTED_MARKER, Tail
-from multiclaude.router.turn import STALE_AFTER, Turn
+from multiclaude.router.turn import STALE_AFTER, Turn, telling
 
 POLL = 0.5
 READY_AFTER = 8           # seconds a freshly started claude gets before anything is typed into it
@@ -67,11 +67,12 @@ class Session:
         self.recover()
 
     def recover(self):
-        """Pick up the live session's state from its newest transcript, without acting on old entries:
-        their notices are dropped, and add-ins never see them (on_transcript_entry)."""
+        """Pick up the live session's state from the end of its newest transcript, as far back as
+        the latest entry that says something about a turn (Tail.recent), without acting on old
+        entries: their notices are dropped, and add-ins never see them (on_transcript_entry)."""
         newest = self.tail.newest()
         if newest:
-            for entry in self.tail.read(newest):
+            for entry in self.tail.recent(newest, telling):
                 self.turn.handle(entry)
             self.turn.last_write = os.path.getmtime(newest)
             if time.time() - self.turn.last_write > STALE_AFTER:
@@ -82,7 +83,7 @@ class Session:
     def read(self, now, on_entry=None):
         """Follow the transcripts; the new entries. on_entry(entry), if given, sees each one before
         the turn does."""
-        entries = self.tail.read_new()
+        entries = self.tail.read_new(now)
         if entries:
             self.turn.last_write = now
         for entry in entries:
