@@ -1,20 +1,21 @@
 """The router's loop: each message goes to its person's assistant, or to another person's whose
 message in their chat it answers, or is one of the bot's commands, and every session is tended.
 It never waits on a terminal or the network: each session's queue has its own thread
-(work.Worker), and replies go out in the background. It only sends to the Bot API, so it never
-competes with the Telegram plugin for getUpdates."""
+(work.Worker), and replies go out in the background. Telegram's messages reach it through the
+front desk, whose Telegram plugin polls for them, or, with "frontdesk": "router" in config.json,
+from a thread of its own that does (telegram_entrance.py)."""
 import dataclasses
 import os
 import threading
 import time
 import traceback
 
-from multiclaude import addons, background, bot, jsonfile, paths, telegram
+from multiclaude import addons, background, bot, config, jsonfile, paths, telegram
 from multiclaude import users as registry
 from multiclaude.channels import TelegramChat
 from multiclaude.log import log
-from multiclaude.router import (about, asks, limits, mcp_login, panel, plugins, poller, recovery, relay_entrance, switching,
-                                usage, work)
+from multiclaude.router import (about, asks, hibernate, limits, mcp_login, panel, plugins, poller, recovery, relay_entrance,
+                                switching, telegram_entrance, usage, work)
 from multiclaude.router import inbound as messages
 from multiclaude.router.session import Session
 from multiclaude.router.upgrade import Upgrader
@@ -65,20 +66,26 @@ class Desk:
         self.routed = 0                  # messages routed since the front desk was last reset
         self.next_desk_reset = 0.0       # no front desk /clear before this time
         self.offsets_saved = ({}, 0.0)   # the front desk offsets last written to DESK_OFFSETS, and when
-        self.desk = Session("front desk", DESK_PANE, paths.project_dir(paths.ROOT))
+        # The front desk's session, whose transcripts bring Telegram's messages; None when the router polls itself.
+        self.desk = None if config.frontdesk() == "router" else Session("front desk", DESK_PANE, paths.project_dir(paths.ROOT))
+        self.telegram_in = None          # the router's own way in from Telegram, when there is no front desk
         self.workers = {}                # session name -> the Worker for its queue
         self.limits = limits.LimitAlerts()
         self.upgrader = Upgrader()
-        self.poller = poller.PollerWatch(self.desk)
+        self.hibernator = hibernate.Hibernator()
+        self.poller = poller.PollerWatch(self.desk) if self.desk else None
         self.network = recovery.Network(recovery.targets())
         self.next_send_held = 0.0        # no look for held messages before this time
         self.panel = panel.Panel(self, lambda fn, *args: self.background("the control panel", fn, *args))
 
     def start(self):
         self.network.start()
-        self.start_worker(self.desk)
         self.load_users()
-        self.resume_desk()
+        if self.desk:
+            self.start_worker(self.desk)
+            self.resume_desk()
+        else:
+            self.open_telegram()
         self.open_relay()
         self.describe_bot()
         panel.set_menu_button()
@@ -142,21 +149,43 @@ class Desk:
         self.load_users()
         if not self.network.online():
             self.postpone_stuck(now)
-        for entry in self.desk.read(now):
-            survive("routing a message", self.inbound, entry)
+        if self.desk:
+            for entry in self.desk.read(now):
+                survive("routing a message", self.inbound, entry)
+        else:
+            self.telegram_in.tick(now)
+            for msg in self.telegram_in.waiting():
+                survive("routing a message", self.route, msg)
         for envelope in self.relay.waiting() if self.relay else []:
             survive("routing from the relay", self.relay_inbound, envelope)
         survive("taking reload requests", plugins.take_reload_requests, self.users, now)
-        self.save_desk_offsets(now)
         for user in list(self.users.values()):
             survive(f"{user.name}'s assistant", self.tend, user, now)
         for outage in self.network.take_ended():
             in_background(survive, "getting going after the outage", self.after_outage, outage)
         self.send_held(now)
         self.panel.tick(now)
-        self.reset_desk(now)
-        self.upgrader.tick(now, [self.desk, *self.users.values()], self.users.get(self.owner))
-        self.poller.tick(now, self.users.get(self.owner), self.background)
+        self.upgrader.tick(now, self.sessions(), self.users.get(self.owner))
+        self.hibernator.tick(now, list(self.users.values()))
+        if self.desk:
+            self.save_desk_offsets(now)
+            self.reset_desk(now)
+            self.poller.tick(now, self.users.get(self.owner), self.background)
+
+    def sessions(self):
+        """Every Claude Code session the router tends: the front desk, when there is one, and each person's assistant."""
+        return [*([self.desk] if self.desk else []), *self.users.values()]
+
+    def open_telegram(self):
+        self.telegram_in = telegram_entrance.TelegramEntrance(self.tell_owner)
+        self.telegram_in.start()
+        log("no front desk: the router polls Telegram itself")
+
+    def tell_owner(self, text):
+        """A quiet word to the owner about the bot itself, when there is one to tell."""
+        owner = self.users.get(self.owner)
+        if owner:
+            telegram.later(telegram.send, owner.chat_id, text, disable_notification=True)
 
     def tend(self, user, now):
         """One poll's work for one person: follow their assistant (add-ins see each new transcript
@@ -199,7 +228,7 @@ class Desk:
 
     def postpone_stuck(self, now):
         """While the VM is offline, no turn is judged stuck (turn.Turn.postpone_stuck)."""
-        for session in [self.desk, *self.users.values()]:
+        for session in self.sessions():
             session.turn.postpone_stuck(now)
 
     def after_outage(self, outage):
@@ -228,8 +257,12 @@ class Desk:
         return True
 
     def inbound(self, entry):
-        msg = messages.parse(entry)
-        if not msg or not self.first_time(msg):
+        """Route the Telegram message a front desk transcript entry carries, if it carries one."""
+        if msg := messages.parse(entry):
+            self.route(msg)
+
+    def route(self, msg):
+        if not self.first_time(msg):
             return
         self.routed += 1
         name = self.by_chat.get(str(msg.sender))

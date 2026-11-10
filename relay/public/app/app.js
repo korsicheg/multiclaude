@@ -244,7 +244,8 @@ function restoreModelRow() {
 
 function nowLine(claude) {
   const now = claude.model ? `${claude.model}${claude.effort ? `, ${claude.effort} effort` : ""}` : "not known yet";
-  return `Now ${now}. After a restart: ${afterRestart(claude)}.`;
+  const asleep = claude.asleep ? " Asleep while idle: it wakes up with your next message." : "";
+  return `Now ${now}. After a restart: ${afterRestart(claude)}.${asleep}`;
 }
 
 /* Their own saved model and effort, else the VM's default, else Claude Code's own. */
@@ -341,7 +342,8 @@ function machineRows({ sample, day, limits }) {
     ...disks.map((disk) => chartedMeter(`Disk ${disk.mount}`, disk.percent, `${size(disk.free_mb)} free of ${size(disk.total_mb)}`,
       disk === fullest ? charted("disk") : null)),
     runningRow("Router", sample.router),
-    ...sample.sessions.map((session) => runningRow(`${session.display}'s assistant`, session.running)),
+    sample.telegram == null ? null : heardRow(sample.telegram),
+    ...sample.sessions.map((session) => runningRow(`${session.display}'s assistant`, session.running, session.asleep)),
     el("div", { className: "row" }, el("span", { className: "label" }, "Up for"),
       el("span", { className: "value" }, duration(sample.uptime))),
   ].filter(Boolean);
@@ -353,9 +355,18 @@ function alertRow(alert) {
       el("span", { className: "sub" }, `since ${moment(alert.since, snapshot.person.timezone)}`)));
 }
 
-function runningRow(label, running) {
-  return el("div", { className: "row" }, el("span", { className: `dot ${running ? "ok" : "failed"}` }),
-    el("span", { className: "label" }, label), el("span", { className: "value" }, running ? "running" : "not running"));
+// Only in samples of a router that polls Telegram itself, with no front desk.
+function heardRow(heard) {
+  return el("div", { className: "row" }, el("span", { className: `dot ${heard ? "ok" : "failed"}` }),
+    el("span", { className: "label" }, "Telegram"),
+    el("span", { className: "value" }, heard ? "heard by the router" : "not heard by the router"));
+}
+
+// asleep: an assistant put to sleep while idle, which wakes with its person's next message.
+function runningRow(label, running, asleep) {
+  return el("div", { className: "row" }, el("span", { className: `dot ${running ? "ok" : asleep ? "" : "failed"}` }),
+    el("span", { className: "label" }, label),
+    el("span", { className: "value" }, running ? "running" : asleep ? "asleep" : "not running"));
 }
 
 /* A share's bar, and under it its last day when the VM charts it: {day, values, limit}. */

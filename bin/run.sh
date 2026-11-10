@@ -3,6 +3,8 @@
 # Keeps the front desk connected to Telegram, restarting it if it exits. The
 # front desk only hosts the Telegram plugin; the router (lib/multiclaude/router) routes
 # each message to the sender's own assistant session (see ARCHITECTURE.md).
+# With "frontdesk": "router" in config.json the router polls Telegram itself: then
+# this only starts everyone's assistants and keeps the tmux server's first session.
 set -u
 # shellcheck source-path=SCRIPTDIR source=common.sh
 . "$(dirname "$(readlink -f "$0")")/common.sh"
@@ -12,6 +14,14 @@ load_env
 # On a new machine Claude Code first asks whether to trust this folder, and nobody
 # watches this terminal: the plugin would never start. Trust it, as run-user.sh does.
 export CLAUDE_CODE_SANDBOXED=1
+
+if [ "$(frontdesk)" = router ]; then
+  "$ROOT/bin/assistant" start-users || echo "[$(date -Is)] starting user assistants failed"
+  echo "No front desk runs here: the router polls Telegram itself (\"frontdesk\": \"router\" in $CONFIG)."
+  echo "This session only keeps the tmux server that assistant.service runs. To bring the front desk"
+  echo "back, take that setting out, then run: assistant install && assistant restart"
+  exec sleep infinity
+fi
 
 while true; do
   # Claude Code remembers MCP servers that failed to connect and skips them at

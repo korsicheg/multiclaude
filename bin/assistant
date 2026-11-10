@@ -80,9 +80,12 @@ cmd_install() {
   echo "Installed for $(id -un). Next: assistant setup"
 }
 
+# Bun is for the Telegram plugin alone, which nothing runs when the router polls Telegram itself.
 check_programs() {
   local program missing=()
-  for program in claude bun tmux jq curl git openssl python3; do
+  local -a needed=(claude tmux jq curl git openssl python3)
+  [ "$(frontdesk)" = router ] || needed+=(bun)
+  for program in "${needed[@]}"; do
     command -v "$program" >/dev/null || missing+=("$program")
   done
   [ ${#missing[@]} = 0 ] || die "install these first: ${missing[*]} (README, Requirements)"
@@ -153,8 +156,19 @@ install_rules() {
   done
 }
 
-# Only the front desk's folder has the plugin: its .claude/settings.json enables it there.
+# Only the front desk's folder has the plugin: its .claude/settings.json enables it there. When
+# the router polls Telegram itself ("frontdesk": "router" in config.json), the plugin is turned off
+# for that folder instead, in its settings.local.json: any Claude Code session started there would
+# start it, and a second poller takes the bot's messages away from the router.
 install_telegram_plugin() {
+  local local_settings="$ROOT/.claude/settings.local.json" plugin=telegram@claude-plugins-official
+  if [ "$(frontdesk)" = router ]; then
+    mkdir -p "${local_settings%/*}"
+    [ -f "$local_settings" ] || echo '{}' > "$local_settings"
+    update_json "$local_settings" --arg p "$plugin" '.enabledPlugins[$p] = false'
+    return
+  fi
+  if [ -f "$local_settings" ]; then update_json "$local_settings" --arg p "$plugin" 'del(.enabledPlugins[$p])'; fi
   ( cd "$ROOT" &&
     { claude plugin marketplace list 2>/dev/null | grep -q claude-plugins-official ||
         claude plugin marketplace add anthropics/claude-plugins-official; } &&
@@ -266,14 +280,15 @@ cmd_pair() {
   ' "$ACCESS" > "$tmp"
   chmod 600 "$tmp"
   mv "$tmp" "$ACCESS"
-  # The Telegram plugin watches approved/ and sends the "Paired!" confirmation.
+  # Whoever polls Telegram (the plugin, or the router itself) watches approved/ and sends the
+  # "Paired!" confirmation.
   mkdir -p "$TELEGRAM_DIR/approved"
   printf '%s' "$chat" > "$TELEGRAM_DIR/approved/$sender"
   echo "Paired Telegram user $sender. Everyone else is now ignored (allowlist mode)."
 
   if [ -n "$name" ]; then
     cmd_add_user "$name" "$sender" "$display"
-    sleep 2  # let the plugin's "Paired!" confirmation go first
+    sleep 2  # let the "Paired!" confirmation go first
     printf '%s\n' \
       "Hi $(jq -r --arg n "$name" '.[$n].display' "$USERS")! 👋 I'm $(bot_name), running on $(jq -r --arg n "$(owner_name)" '.[$n].display' "$USERS")'s VM. Just write to me here." \
       "" "**Commands**" \
@@ -340,37 +355,73 @@ cmd_add_user() {
   echo "Added $display ($name, Telegram id $id): workspace $ws, terminal: assistant attach $name"
 }
 
-# Make sure every user's assistant session is running (idempotent).
+# Make sure every user's assistant session is running (idempotent), apart from those put to sleep
+# while idle, which the router wakes for their person's next message.
 cmd_start_users() {
   local names name failed=0
   names=$(jq -r 'keys[]' "$USERS") || die "can't read $USERS"
   for name in $names; do
     [ -d "$HOME/workspaces/$name" ] || continue
-    tm has-session -t "=u-$name" 2>/dev/null && continue
-    # The router may start the same session at the same moment; losing that race is fine.
-    tm new-session -d -s "u-$name" "${TMUX_SIZE[@]}" "$ROOT/bin/run-user.sh" "$name" 2>/dev/null ||
-      tm has-session -t "=u-$name" 2>/dev/null ||
-      { echo "error: couldn't start the assistant for $name" >&2; failed=1; }
+    asleep "$name" && continue
+    start_user "$name" || failed=1
   done
   return "$failed"
 }
 
+# start_user NAME [fresh]: NAME's assistant in its tmux session, unless it runs already; with
+# fresh, on a new conversation.
+start_user() {
+  local name=$1
+  tm has-session -t "=u-$name" 2>/dev/null && return 0
+  # The router may start the same session at the same moment; losing that race is fine.
+  tm new-session -d -s "u-$name" "${TMUX_SIZE[@]}" "$ROOT/bin/run-user.sh" "$@" 2>/dev/null ||
+    tm has-session -t "=u-$name" 2>/dev/null ||
+    { echo "error: couldn't start the assistant for $name" >&2; return 1; }
+}
+
+# Start an assistant that was put to sleep while idle ("hibernate_after_minutes" in config.json).
+# The router does this for its person's next message, with fresh for their /restart.
+cmd_wake() {
+  local name="${1:-}"
+  [ -n "$name" ] && [ -d "$HOME/workspaces/$name" ] || die "usage: assistant wake <name>"
+  rm -f "$ROOT/state/asleep/$name"
+  start_user "$name" ${2:+"$2"}
+}
+
+cmd_attach() {
+  if [ -z "${1:-}" ]; then tm attach -t =assistant; return; fi
+  if asleep "$1" && ! tm has-session -t "=u-$1" 2>/dev/null; then
+    die "$1's assistant is asleep while idle; start it with: assistant wake $1"
+  fi
+  tm attach -t "=u-$1"
+}
+
 cmd_status() {
-  local pid name state
+  local pid name state saved
   echo "Service: $(systemctl is-active assistant 2>/dev/null || true)"
-  pid=$(cat "$TELEGRAM_DIR/bot.pid" 2>/dev/null || true)
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "Telegram plugin: running (pid $pid)"
-  else echo "Telegram plugin: not running"; fi
+  if [ "$(frontdesk)" = router ]; then
+    # The router saves this at least once a minute while Telegram answers it.
+    saved=$(jq -r '.saved // empty | floor' "$ROOT/state/telegram-updates.json" 2>/dev/null || true)
+    if [ -n "$saved" ]; then echo "Telegram: polled by the router itself, no front desk; last heard from it $(( $(date +%s) - saved ))s ago"
+    else echo "Telegram: polled by the router itself, no front desk; not heard from it yet"; fi
+  else
+    pid=$(cat "$TELEGRAM_DIR/bot.pid" 2>/dev/null || true)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "Telegram plugin: running (pid $pid)"
+    else echo "Telegram plugin: not running"; fi
+  fi
   echo "Router (routing, typing, the bot's commands, updates): $(systemctl is-active assistant-watcher 2>/dev/null || true)"
   if [ -f "$ACCESS" ]; then
     jq -r '"DM policy: \(.dmPolicy)\nAllowed Telegram ids: \(.allowFrom | join(", "))\nPending codes: \(.pending | keys | join(", "))"' "$ACCESS"
   fi
   echo "Users:"
   for name in $(jq -r 'keys[]' "$USERS" 2>/dev/null); do
-    if tm has-session -t "=u-$name" 2>/dev/null; then state="running"; else state="NOT running"; fi
+    if tm has-session -t "=u-$name" 2>/dev/null; then state="running"
+    elif asleep "$name"; then state="asleep while idle (their next message wakes it)"
+    else state="NOT running"; fi
     jq -r --arg n "$name" --arg s "$state" '.[$n] | "  \($n): \(.display), Telegram \(.telegram_id), \(.role), assistant \($s)"' "$USERS"
   done
   echo "Scheduled jobs: $(crontab -l 2>/dev/null | grep -c 'assistant job' || true)"
+  [ "$(frontdesk)" = router ] && return
   echo
   echo "--- front desk terminal (last lines) ---"
   tm capture-pane -p -t assistant 2>/dev/null | grep -v '^[[:space:]]*$' | tail -8 || echo "(not running)"
@@ -721,20 +772,26 @@ cmd_notify() {
 cmd_help() {
   cat <<'EOF'
 assistant install               Set this machine up for the user running it: commands,
-                                Claude Code settings, the Telegram plugin, the services
+                                Claude Code settings, the Telegram plugin (unless the router
+                                polls Telegram itself), the services
 assistant setup                 Save the bot token (and an API key, if the sessions use one),
                                 then start the service
 assistant status                Service, routing, pairing and per-user state
-assistant attach [<name>]       Open a user's assistant terminal, or the front desk without a name
+assistant attach [<name>]       Open a user's assistant terminal, or the front desk's without a name
                                 (leave with Ctrl-b then d)
-assistant start|stop|restart    Front desk, every user's assistant and the router
+assistant start|stop|restart    The front desk (if there is one), every user's assistant and
+                                the router
 assistant invite [off]          Open the bot to pairing so a new person can get a code
 assistant pair <code> [<name> ["Display Name"]]
                                 Approve a pairing code, close pairing, and set up that
                                 person's own assistant when a name is given
 assistant add-user <name> <telegram id> ["Display Name"]
                                 Give an already-allowed Telegram user their own assistant
-assistant start-users           Start any user assistant that isn't running
+assistant start-users           Start any user assistant that isn't running, unless it was put
+                                to sleep while idle
+assistant wake <name>           Start a user's assistant that was put to sleep while idle
+                                ("hibernate_after_minutes" in config.json), as their next
+                                message does
 assistant job [--user <name>] [--tools <tools>] [--deny <tools>] [--model <model>] "<task>"
                                 Run a one-shot task in that user's workspace and send them
                                 the result (used by cron; default user: the owner); with
@@ -773,10 +830,11 @@ case "${1:-help}" in
   setup)   cmd_setup ;;
   pair)    shift; cmd_pair "$@" ;;
   status)  cmd_status ;;
-  attach)  if [ -n "${2:-}" ]; then tm attach -t "=u-$2"; else tm attach -t =assistant; fi ;;
+  attach)  cmd_attach "${2:-}" ;;
   invite)  shift; cmd_invite "$@" ;;
   add-user) shift; cmd_add_user "$@" ;;
   start-users) cmd_start_users ;;
+  wake)    shift; cmd_wake "$@" ;;
   start|stop|restart) sudo systemctl "$1" assistant ;;
   job)     shift; cmd_job "$@" ;;
   notify)  shift; cmd_notify "$@" ;;

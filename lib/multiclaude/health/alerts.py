@@ -3,7 +3,8 @@ high, or for a disk critical), kept in alerts.json, and the owner gets a message
 a level or back to fine, never while it stays put. A share goes up after `samples` samples in a row
 at or over its `at` (or `critical`), and goes down at once, but only under its `clear` (or
 `critical_clear`), so a value hovering at a line doesn't flap. The router and each person's
-assistant are high while they aren't running. The owner may change any of DEFAULTS under "health"
+assistant are high while they aren't running; an assistant put to sleep while idle (asleep.py)
+isn't down. The owner may change any of DEFAULTS under "health"
 in config.json: {"health": {"ram": {"at": 95, "samples": 2}}}."""
 from dataclasses import asdict, dataclass, replace
 from typing import NamedTuple
@@ -20,6 +21,7 @@ DEFAULTS = {
     "swap": {"at": 50, "clear": 40, "samples": 3},
     "disk": {"at": 85, "clear": 80, "critical": 95, "critical_clear": 90, "samples": 1},
     "router": {"samples": 1},
+    "telegram": {"samples": 2},
     "assistant": {"samples": 2},
 }
 LEVELS = ("fine", "high", "critical")
@@ -112,6 +114,7 @@ def rules(sample, settings):
     return [Cpu(settings["cpu"]), Ram(settings["ram"]), Swap(settings["swap"]),
             *(Disk(disk["mount"], settings["disk"]) for disk in sample["disks"]),
             Router(settings["router"]),
+            *([Telegram(settings["telegram"])] if "telegram" in sample else []),
             *(Assistant(session["name"], session["display"], settings["assistant"]) for session in sample["sessions"])]
 
 
@@ -266,6 +269,25 @@ class Router(Outage):
         return "The router is down"
 
 
+class Telegram(Outage):
+    """The router's own polling of Telegram, in samples taken while it does that ("frontdesk":
+    "router"). A router that is down is the Router rule's to tell."""
+    key = "telegram"
+
+    def down(self, sample):
+        return sample["router"] and not sample["telegram"]
+
+    def alert(self, sample, level):
+        return (f"📡 **The router isn't hearing Telegram**: it has had no answer to its polling for {lasting(self.samples)}, "
+                "so messages wait at Telegram. See why with `journalctl -u assistant-watcher -n 50`; it keeps trying.")
+
+    def all_clear(self, sample):
+        return "✅ **The router hears Telegram again.** It takes in what was sent meanwhile."
+
+    def headline(self, sample):
+        return "The router isn't hearing Telegram"
+
+
 class Assistant(Outage):
     def __init__(self, name, display, setting):
         super().__init__(setting)
@@ -273,7 +295,8 @@ class Assistant(Outage):
         self.key = f"assistant:{name}"
 
     def down(self, sample):
-        return not next(session["running"] for session in sample["sessions"] if session["name"] == self.name)
+        session = next(session for session in sample["sessions"] if session["name"] == self.name)
+        return not (session["running"] or session.get("asleep"))
 
     def alert(self, sample, level):
         whose = markdown_literal(self.display)

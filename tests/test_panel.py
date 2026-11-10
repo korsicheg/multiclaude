@@ -333,6 +333,14 @@ def test_the_panel_shows_the_model_running_now_and_the_one_after_a_restart(r, de
     claude = last_snapshot(r)["claude"]
     assert (claude["current_model"], claude["effort"]) == ("sonnet", "low")
     assert (claude["saved_model"], claude["saved_effort"]) == ("opus", "high")
+    assert claude["asleep"] is False
+
+
+def test_the_panel_says_when_the_assistant_is_asleep_while_idle(r, panel):
+    from multiclaude import asleep
+    asleep.mark("alice")
+    tap(panel, "refresh")
+    assert last_snapshot(r)["claude"]["asleep"] is True
 
 
 def test_an_mcp_tap_runs_the_bots_own_mcp_command(r, desk, panel, monkeypatch):

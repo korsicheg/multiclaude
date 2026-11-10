@@ -10,7 +10,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import NamedTuple
 
-from multiclaude import paths, tmux
+from multiclaude import asleep, config, jsonfile, paths, tmux
 
 BYTES_PER_MB = 1024 * 1024
 KB_PER_MB = 1024
@@ -19,6 +19,7 @@ NAME_CUT = 15                                  # characters the kernel keeps of 
 TOP_SHOWN = 5                                  # programs listed as using the most memory
 DISK_FOLDERS = (Path("/"), paths.ROOT, paths.WORKSPACES)  # their file systems are watched, each once
 ROUTER_UNIT = "assistant-watcher"
+TELEGRAM_QUIET = 5 * 60  # a router polling Telegram itself saves its state every minute; older than this, it hears nothing
 ROUTER_SCRIPT = paths.BIN / "watcher.py"
 SYSTEMCTL_TIMEOUT = 10
 PODMAN_TIMEOUT = 15
@@ -53,8 +54,8 @@ def sample(people, since=None):
                     "cores": os.cpu_count() or 1},
             "memory": memory(fields), "swap": swap(fields), "disks": disks(DISK_FOLDERS),
             "top": top_memory(running), "hosted": hosted(running), "router": router_running(),
-            "sessions": [{"name": person.name, "display": person.display, "running": assistant_running(person, running)}
-                         for person in people],
+            "sessions": [session(person, running) for person in people],
+            **({} if (heard := telegram_heard()) is None else {"telegram": heard}),
             "ticks": list(ticks)}
 
 
@@ -321,6 +322,23 @@ def router_running():
         return subprocess.run(["systemctl", "is-active", "--quiet", ROUTER_UNIT], timeout=SYSTEMCTL_TIMEOUT).returncode == 0
     except (subprocess.SubprocessError, OSError):
         return False
+
+
+def telegram_heard():
+    """Whether the router, when it polls Telegram itself ("frontdesk": "router"), had an answer
+    from it lately: it saves its state at least once a minute while it does
+    (router/telegram_entrance.py). None with a front desk, whose plugin does the polling."""
+    if config.frontdesk() != "router":
+        return None
+    kept = jsonfile.read_json(paths.STATE / "telegram-updates.json", {})
+    saved = kept.get("saved") if isinstance(kept, dict) else None
+    return isinstance(saved, (int, float)) and time.time() - saved < TELEGRAM_QUIET
+
+
+def session(person, running):
+    """A person's assistant: whether it runs, or was put to sleep while idle (asleep.py)."""
+    up = assistant_running(person, running)
+    return {"name": person.name, "display": person.display, "running": up, "asleep": not up and asleep.marked(person.name)}
 
 
 def assistant_running(person, running):

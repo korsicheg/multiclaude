@@ -212,6 +212,34 @@ class Restart(Work):
 
 
 @dataclass
+class Hibernate(Work):
+    """Put an idle assistant to sleep (router/hibernate.py). Checked again first, as an update
+    restart is: it may have got busy since it was found idle."""
+    pid: int = 0
+    after: float = 0.0  # how long it must have been idle
+    needs_assistant = False
+
+    def run(self, session, now):
+        session.queue.pop(0)
+        proc = session.claude_proc()
+        if proc and proc[0] == self.pid and session.can_hibernate(now, proc, self.after):
+            log(f"{session.name}: idle for {(now - session.turn.last_write) / 60:.0f} min; putting it to sleep")
+            session.hibernate(self.pid)
+        return True
+
+
+def wake(session):
+    """Start a sleeping assistant for the work that came for it, and put its session-only
+    switches back before any of that is typed in, so its first reply is on the model its person
+    chose. One that doesn't come up is dealt with as any assistant that isn't running (serve)."""
+    log(f"{session.name}: asleep; waking it up")
+    if not session.wake_up():
+        return
+    for setting, target in dict(session.session_switches).items():
+        switching.switch(session, setting, target, keep=False, quiet=True, came_back="woke up")
+
+
+@dataclass
 class ResetContext(Work):
     """/clear for the front desk, which only needs to see messages arrive; done(ok) hears how it went."""
     done: object = None
@@ -415,4 +443,6 @@ class Worker:
             self.last_check = now
             approvals.check(session)
         if session.queue and not session.approval:
+            if session.asleep():
+                wake(session)
             serve(session, now)

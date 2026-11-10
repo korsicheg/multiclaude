@@ -430,10 +430,12 @@ EMPTY_BOX = (Path(__file__).parent / "fixtures" / "message-box-empty.txt").read_
 def r(tmp_path, monkeypatch):
     """The router's modules with every location in tmp_path, and tmux and the Bot API recorded."""
     fresh_multiclaude_in(tmp_path, monkeypatch)
-    from multiclaude import paths, telegram, tmux
-    from multiclaude.router import (about, asks, claude_ui, desk, inbound, limits, plugins, poller, recovery, session,
-                                    switching, upgrade, usage, work)
+    from multiclaude import access, asleep, paths, telegram, tmux
+    from multiclaude.router import (about, asks, claude_ui, desk, hibernate, inbound, limits, plugins, poller, recovery,
+                                    rich, session, switching, telegram_entrance, updates, upgrade, usage, work)
     r = SimpleNamespace(paths=paths, telegram=telegram, tmux=tmux, about=about, asks=asks, claude_ui=claude_ui, desk=desk,
+                        asleep=asleep, hibernate=hibernate, access=access, entrance=telegram_entrance, updates=updates,
+                        rich=rich,
                         messages=inbound, limits=limits, plugins=plugins, poller=poller, recovery=recovery, session=session,
                         switching=switching, upgrade=upgrade, usage=usage, work=work,
                         api_calls=[], keystrokes=[], unreachable=False)
@@ -511,6 +513,49 @@ def channel(text, chat=ALICE_CHAT, msg_id="5", **attrs):
     head = " ".join(f'{k}="{html.escape(str(v))}"' for k, v in attrs.items())
     return {"type": "queue-operation", "operation": "enqueue",
             "content": f'<channel source="plugin:telegram:telegram" {head}>\n{html.escape(text)}\n</channel>'}
+
+
+# Formatted Telegram messages, as (the rich message's blocks, the Markdown they reach an assistant
+# as): the plugin patch's TypeScript and the router's own Python (router/rich.py) must both make this.
+RICH_MESSAGES = [
+    ([
+        {"type": "paragraph", "text": "Set up the CLI."},
+        {"type": "paragraph", "text": ""},
+        {"type": "heading", "text": "Rules", "size": 2},
+        {"type": "list", "items": [
+            {"label": "•", "blocks": [{"type": "paragraph", "text": [
+                "Run ", {"type": "code", "text": "$CLI --version"}, ", see ",
+                {"type": "url", "text": "the docs", "url": "https://example.com/docs"}, " or ",
+                {"type": "url", "text": "https://example.com", "url": "https://example.com"}, "."]}]},
+            {"label": "•", "blocks": [
+                {"type": "paragraph", "text": "Nested:"},
+                {"type": "list", "items": [{"label": "•", "blocks": [{"type": "paragraph", "text": "inner"}]}]}]}]},
+        {"type": "list", "items": [{"label": "1.", "type": "1", "value": 1, "blocks": [
+            {"type": "paragraph", "text": {"type": "bold", "text": "Find the CLI."}}]}]},
+    ], "Set up the CLI.\n\n## Rules\n\n"
+       "- Run `$CLI --version`, see [the docs](https://example.com/docs) or https://example.com.\n"
+       "- Nested:\n  - inner\n\n"
+       "1. **Find the CLI.**"),
+    ([
+        {"type": "table", "cells": [[{"text": "ID", "is_header": True}, {"text": "Name", "is_header": True}],
+                                    [{"text": "gpt-sol"}, {"text": "a|b"}]]},
+        {"type": "pre", "language": "bash", "text": "mycli models"},
+        {"type": "blockquote", "blocks": [{"type": "paragraph", "text": "Quoted"}], "credit": "Alice"},
+        {"type": "details", "summary": "More", "blocks": [{"type": "paragraph", "text": "Hidden"}]},
+        {"type": "list", "items": [{"label": "•", "has_checkbox": True, "is_checked": True,
+                                    "blocks": [{"type": "paragraph", "text": "done"}]}]},
+        {"type": "document", "document": {"file_name": "bill.pdf", "file_id": "DOC"}, "caption": {"text": "June"}},
+        {"type": "photo", "photo": [{"file_id": "SMALL"}, {"file_id": "LARGE"}]},
+        {"type": "map", "location": {"latitude": 52.52, "longitude": 13.4}, "zoom": 15},
+    ], "| ID | Name |\n| --- | --- |\n| gpt-sol | a\\|b |\n\n"
+       "```bash\nmycli models\n```\n\n"
+       "> Quoted\n>\n> — Alice\n\n"
+       "<details><summary>More</summary>\n\nHidden\n\n</details>\n\n"
+       "- [x] done\n\n"
+       "(document: bill.pdf · file_id: DOC)\n\nJune\n\n"
+       "(photo · file_id: LARGE)\n\n"
+       "(map: 52.52, 13.4)"),
+]
 
 
 def transcript(user):

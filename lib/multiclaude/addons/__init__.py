@@ -13,6 +13,13 @@ which runs that function of every add-in that is on and defines it. The hooks:
 - on_message(user, msg, now) -> bool: a message for a person's assistant; True when the add-in
   queued it itself, so the core doesn't (router/desk.py).
 - attachment_lines(attrs) -> [str]: lines for a message's Attachments (router/inbound.py).
+- telegram_message(message, paired) -> (text, attrs) or None: a Telegram message (the Bot API's
+  Message) of a kind the core passes on nothing for, such as a location, when the router polls
+  Telegram itself; an add-in that takes it gives the text and attributes it goes on with. paired:
+  whether a paired person sent it in their private chat (router/telegram_entrance.py). With the
+  front desk's plugin polling, a patch of the add-in's does this (bin/patch-telegram-plugin).
+- telegram_edited_message(message): a paired person edited a message in their private chat, which
+  is also how a live location's updates come; nothing of it goes on (router/telegram_entrance.py).
 - help_info(user, app) -> {"can_send": [...], "ways": [...]}: what /help and the bot's description
   say about it: what the person can send in app (a channels.Chat.app, "Telegram" or an add-in's),
   and the other ways they can reach the bot. user is None for the bot's description, whose "ways"

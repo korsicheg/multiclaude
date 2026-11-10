@@ -4,7 +4,9 @@ import subprocess
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 
-from conftest import BIN, HANDLER, PLUGIN, enable_addons, patch, plugin_version
+import pytest
+
+from conftest import BIN, HANDLER, PLUGIN, RICH_MESSAGES, enable_addons, patch, plugin_version
 
 
 def original(home, version):
@@ -151,53 +153,10 @@ def rich_markdown(tmp_path, blocks):
                   json.dumps(blocks))
 
 
-def test_a_rich_message_keeps_its_headings_lists_and_inline_formatting(tmp_path):
-    blocks = [
-        {"type": "paragraph", "text": "Set up the CLI."},
-        {"type": "paragraph", "text": ""},
-        {"type": "heading", "text": "Rules", "size": 2},
-        {"type": "list", "items": [
-            {"label": "•", "blocks": [{"type": "paragraph", "text": [
-                "Run ", {"type": "code", "text": "$CLI --version"}, ", see ",
-                {"type": "url", "text": "the docs", "url": "https://example.com/docs"}, " or ",
-                {"type": "url", "text": "https://example.com", "url": "https://example.com"}, "."]}]},
-            {"label": "•", "blocks": [
-                {"type": "paragraph", "text": "Nested:"},
-                {"type": "list", "items": [{"label": "•", "blocks": [{"type": "paragraph", "text": "inner"}]}]}]}]},
-        {"type": "list", "items": [{"label": "1.", "type": "1", "value": 1, "blocks": [
-            {"type": "paragraph", "text": {"type": "bold", "text": "Find the CLI."}}]}]},
-    ]
-
-    assert rich_markdown(tmp_path, blocks) == (
-        "Set up the CLI.\n\n## Rules\n\n"
-        "- Run `$CLI --version`, see [the docs](https://example.com/docs) or https://example.com.\n"
-        "- Nested:\n  - inner\n\n"
-        "1. **Find the CLI.**")
-
-
-def test_a_rich_message_keeps_tables_code_quotes_details_and_the_file_ids_of_its_media(tmp_path):
-    blocks = [
-        {"type": "table", "cells": [[{"text": "ID", "is_header": True}, {"text": "Name", "is_header": True}],
-                                    [{"text": "gpt-sol"}, {"text": "a|b"}]]},
-        {"type": "pre", "language": "bash", "text": "mycli models"},
-        {"type": "blockquote", "blocks": [{"type": "paragraph", "text": "Quoted"}], "credit": "Alice"},
-        {"type": "details", "summary": "More", "blocks": [{"type": "paragraph", "text": "Hidden"}]},
-        {"type": "list", "items": [{"label": "•", "has_checkbox": True, "is_checked": True,
-                                    "blocks": [{"type": "paragraph", "text": "done"}]}]},
-        {"type": "document", "document": {"file_name": "bill.pdf", "file_id": "DOC"}, "caption": {"text": "June"}},
-        {"type": "photo", "photo": [{"file_id": "SMALL"}, {"file_id": "LARGE"}]},
-        {"type": "map", "location": {"latitude": 52.52, "longitude": 13.4}, "zoom": 15},
-    ]
-
-    assert rich_markdown(tmp_path, blocks) == (
-        "| ID | Name |\n| --- | --- |\n| gpt-sol | a\\|b |\n\n"
-        "```bash\nmycli models\n```\n\n"
-        "> Quoted\n>\n> — Alice\n\n"
-        "<details><summary>More</summary>\n\nHidden\n\n</details>\n\n"
-        "- [x] done\n\n"
-        "(document: bill.pdf · file_id: DOC)\n\nJune\n\n"
-        "(photo · file_id: LARGE)\n\n"
-        "(map: 52.52, 13.4)")
+@pytest.mark.parametrize("blocks, markdown", RICH_MESSAGES, ids=["headings, lists and inline formatting",
+                                                                "tables, code, quotes, details and media"])
+def test_a_rich_message_keeps_its_formatting_and_the_file_ids_of_its_media(tmp_path, blocks, markdown):
+    assert rich_markdown(tmp_path, blocks) == markdown
 
 
 def test_only_a_channel_session_takes_over_and_polls(tmp_path):

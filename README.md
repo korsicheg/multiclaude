@@ -8,7 +8,7 @@ Each person gets their own Claude Code session, folder (`~/workspaces/<name>`), 
 
 ## How it fits together
 
-- **Front desk:** a Claude Code session (`assistant.service`, tmux session `assistant`) that only hosts the official Telegram plugin, patched to pass on button taps, replies, reactions and formatted messages, and so that no other Claude Code session can take its Telegram connection. It answers nothing.
+- **Front desk:** a Claude Code session (`assistant.service`, tmux session `assistant`) that only hosts the official Telegram plugin, patched to pass on button taps, replies, reactions and formatted messages, and so that no other Claude Code session can take its Telegram connection. It answers nothing. On [a machine short of memory](#a-machine-short-of-memory) the router can poll Telegram itself instead, with no front desk.
 - **Router:** `bin/watcher.py` (`assistant-watcher.service`, code in `lib/multiclaude/router/`) reads each inbound Telegram message from the front desk's transcript and types it into the sender's own session, or, when it answers a message another person's assistant sent them, into that one. It keeps "typing…" on while that session works, and handles `/clear`, `/restart`, `/stop`, `/usage`, `/model`, `/effort`, `/plugin`, `/skills`, `/mcp`, `/reload-plugins`, `/help` and `/config` itself.
 - **Assistants:** one tmux session per person (`u-<name>`), started by `bin/run-user.sh`, in that person's folder. Each replies through `bin/tg`, which calls the Telegram Bot API.
 - **Scheduled jobs:** cron lines the assistants write, each running `assistant job`: a one-shot Claude in a person's folder whose answer is sent to them.
@@ -43,7 +43,7 @@ Add-ins are in the repo but off until the owner turns them on. The core works fu
 - Any Linux machine with systemd, and a user with passwordless sudo. The bot and every person's assistant run as that user, with full admin rights, so add only people you would trust with the machine.
 - The machine's timezone set to UTC (`sudo timedatectl set-timezone UTC`): cron runs in it, and the bot reads cron times as UTC.
 - [Claude Code](https://code.claude.com), with its first-run onboarding done (run `claude` once by hand). The sessions use either Claude Code's own login (a Claude Pro or Max plan: run `claude`, then `/login`) or an Anthropic API key.
-- [Bun](https://bun.sh) (the Telegram plugin runs on it), plus `tmux`, `jq`, `curl` 8.3+, `git`, `openssl` and Python 3.10+. `assistant install` adds [uv](https://docs.astral.sh/uv/) and [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) if they're missing (cloudflared from Cloudflare's apt repository; elsewhere than Debian or Ubuntu, install it yourself).
+- [Bun](https://bun.sh) (the Telegram plugin runs on it; not needed when the router polls Telegram itself), plus `tmux`, `jq`, `curl` 8.3+, `git`, `openssl` and Python 3.10+. `assistant install` adds [uv](https://docs.astral.sh/uv/) and [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) if they're missing (cloudflared from Cloudflare's apt repository; elsewhere than Debian or Ubuntu, install it yourself).
 - A Telegram bot token. Message [@BotFather](https://t.me/BotFather), send `/newbot`, pick a name and a username ending in `bot`, and copy the token.
 - For the control panel: a free Cloudflare account, and Node.js 22+ (`npx` runs `wrangler` to deploy the relay). Everything else works without it.
 - For development: Node.js and `shellcheck`, which `./check` uses with uv.
@@ -189,6 +189,24 @@ Run `assistant relay deploy` again after a change in `relay/`, and after turning
 
 The bot calls itself by its Telegram name, saved as `name` in `config.json`. To change it, edit `name` there (`aka` adds a second name, shown next to it), then run `assistant install`, which writes it into the assistants' rules, and `sudo systemctl restart assistant-watcher`, which updates the bot's description.
 
+### A machine short of memory
+
+Each person's assistant holds 350 to 600 MB while it runs, whether or not anyone talks to it. To have idle ones put to sleep, add to `~/assistant/config.json`:
+
+```json
+{"hibernate_after_minutes": 30}
+```
+
+The router reads it within a minute, with no restart. An assistant that has been idle that long has its whole tmux session ended, and the person's next message starts it again with its conversation: that first answer takes some seconds longer, with "typing…" showing meanwhile, and their session-only `/model` and `/effort` are put back first. An assistant stays up while it works, while a command or a program it listed with `assistant background` runs, and while it has something scheduled inside Claude Code (CronCreate, `/loop`), which only a running session carries out; scheduled jobs in the crontab never need the session. `assistant status`, `assistant health`, `/usage` and the control panel show such an assistant as asleep, the health alerts don't count it as missing, and `assistant wake <name>` starts it by hand, before `assistant attach <name>` say. Without the setting nobody is put to sleep.
+
+The front desk, a Claude Code session with the Telegram plugin's two Bun processes, holds another 300 to 400 MB, and spends a small model turn on every message, only to pass messages on. To have the router poll Telegram itself instead:
+
+```json
+{"frontdesk": "router"}
+```
+
+Then run `assistant install` and `assistant restart`. People stay paired, and `assistant invite` and `assistant pair` work as before: the router keeps the same access file, hands out the pairing codes, and passes on the same messages (text, photos, files, replies, button taps, reactions, formatted messages, and what the add-ins take). The front desk's tmux session stays, as where `assistant.service` starts everyone's assistants, but runs no Claude Code, and `assistant install` then neither needs Bun nor installs the Telegram plugin. Messages sent while the router is down wait at Telegram, and it takes them in when it's back, unless it was down for over an hour. Only one program may poll a bot: the owner is told if anything else uses the bot's token. To go back, take the setting out and run the same two commands. Set this in `config.json` before the first `assistant install` to start a new machine without a front desk.
+
 ## Add-ins
 
 ```sh
@@ -271,7 +289,8 @@ The owner gets a Telegram message when one of these goes wrong, and again when i
 | Swap used | 50% or more for 3 samples | under 40% |
 | A disk (`/`, and the repo's or the workspaces' if elsewhere) | 85% full, and again at 95% | under 80% |
 | The router (`assistant-watcher`) | not running, at once | running |
-| A person's assistant | no Claude Code in its tmux session for 2 samples | running |
+| Telegram, when the router polls it itself | no answer to its polling for 2 samples | answered |
+| A person's assistant | no Claude Code in its tmux session for 2 samples, unless it was put to sleep while idle | running |
 
 The gap between the two numbers keeps a value hovering at the line from sending a message every 5 minutes. To change any of them, add a `"health"` section to `~/assistant/config.json` with only what you change; the next sample uses it:
 
@@ -279,7 +298,7 @@ The gap between the two numbers keeps a value hovering at the line from sending 
 {"health": {"ram": {"at": 95, "clear": 85, "samples": 2}, "disk": {"at": 80, "critical": 90, "critical_clear": 85}}}
 ```
 
-The keys are `cpu`, `ram`, `swap` and `disk` (`at`, `clear`, `samples`, and for disks `critical`, `critical_clear`), `router` and `assistant` (`samples`). The alerts go out like `assistant notify`, straight through Telegram's Bot API, so the owner still hears when the router is what's down. A machine that's off can't say so: then the samples stop, and the control panel's Machine section says how old the last one is.
+The keys are `cpu`, `ram`, `swap` and `disk` (`at`, `clear`, `samples`, and for disks `critical`, `critical_clear`), `router`, `telegram` and `assistant` (`samples`). The alerts go out like `assistant notify`, straight through Telegram's Bot API, so the owner still hears when the router is what's down. A machine that's off can't say so: then the samples stop, and the control panel's Machine section says how old the last one is.
 
 In the control panel, the owner sees the machine with bars for CPU, memory, swap and each disk, a sparkline of the last 24 hours under CPU, memory and the fullest disk (touch it to read a time), the alerts standing, the router and each assistant, the uptime, the programs using the most memory, and, when the machine hosts apps in Podman, each one with whether it's up and its memory. On the machine:
 
@@ -291,10 +310,11 @@ assistant health                # the machine now, its hosted apps, the alerts s
 
 ```sh
 assistant help                  # every command
-assistant status                # services, pairing, people, the front desk's last lines
+assistant status                # services, pairing, people, the front desk's last lines (or when the router last heard from Telegram)
 assistant attach [<name>]       # watch someone's assistant (or the front desk); leave with Ctrl-b d
 assistant start|stop|restart    # front desk, every assistant and the router
-assistant start-users           # start any person's assistant that isn't running
+assistant start-users           # start any person's assistant that isn't running, unless it's asleep while idle
+assistant wake <name>           # start an assistant that was put to sleep while idle
 assistant notify [--user <name>] "text"         # a Telegram message to one person (default: the owner)
 assistant background [--user <name>] <pid> "what"   # a process an assistant runs in the background, for /stop to end
 assistant job [--user <name>] [--model <m>] [--deny <tools>] "instructions"   # a one-shot task whose answer goes to that person
@@ -316,7 +336,7 @@ assistant addon list|enable|disable
 These files hold secrets or per-person data, and `.gitignore` keeps them out. Back them up separately if you want a full restore. The [backup](addons/backup/README.md) add-in does that every night:
 
 - `~/assistant/.env`: the API key and proxy address, if any
-- `~/assistant/config.json`: the bot's name and the add-ins that are on
+- `~/assistant/config.json`: the bot's name, the add-ins that are on and the owner's other settings
 - `~/.claude/channels/telegram/`: the bot token (`.env`) and the access allowlist (`access.json`)
 - `~/assistant/users.json`: people, their Telegram ids, roles and timezones, and the add-ins' fields
 - `~/assistant/state/`: secrets (`cloudflare.json`, `relay.json`, and the add-ins' own), the router's state (message ids for `/clear`, held messages, open questions, what was shared) and a week of the machine's health

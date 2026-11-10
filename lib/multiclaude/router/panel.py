@@ -118,7 +118,7 @@ def claude_part(user, status):
     saved ones (saved_*), else the VM's (shared_*), else Claude Code's own default (None)."""
     model, effort = usage.model_and_effort(status)
     saved, shared = switching.workspace_settings(user) or {}, jsonfile.read_json(paths.USER_SETTINGS, {})
-    return {"model": model, "effort": effort, "current_model": alias(model),
+    return {"model": model, "effort": effort, "current_model": alias(model), "asleep": user.asleep(),
             "saved_model": alias(saved.get("model")) or saved.get("model"), "saved_effort": saved.get("effortLevel"),
             "shared_model": alias(shared.get("model")) or shared.get("model"), "shared_effort": shared.get("effortLevel"),
             "models": switching.MODELS, "efforts": claude_ui.EFFORTS}

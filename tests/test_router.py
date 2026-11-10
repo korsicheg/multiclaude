@@ -127,6 +127,40 @@ def test_tail_leaves_a_half_written_line_for_next_time(r, tmp_path):
     assert tail.read(str(path)) == [{"b": 2}]
 
 
+def test_a_transcript_gone_quiet_is_no_longer_followed_unless_it_is_the_newest(r, tmp_path):
+    from multiclaude.router.transcript import SETTLED_AFTER, SETTLE_EVERY
+    old, newest, now = tmp_path / "old.jsonl", tmp_path / "newest.jsonl", time.time()
+    for path, age in ((old, SETTLED_AFTER + 120), (newest, SETTLED_AFTER + 60)):
+        append(path, {"read": 1})
+        os.utime(path, (now - age, now - age))
+    tail = r.session.Tail(tmp_path)
+    tail.skip_existing()
+
+    assert tail.read_new(now) == []
+
+    assert list(tail.offsets) == [str(newest)] and list(tail.settled) == [str(old)]
+    append(newest, {"next": 1})  # a conversation resumed with --continue goes on in the newest
+    assert tail.read_new(now + 1) == [{"next": 1}]
+    append(old, {"resumed": "by hand"})
+    assert tail.read_new(now + 2) == []  # not looked at on every poll
+    assert tail.read_new(now + SETTLE_EVERY) == [{"resumed": "by hand"}]
+    assert set(tail.offsets) == {str(old), str(newest)} and not tail.settled
+
+
+def test_a_transcript_with_a_half_written_line_stays_followed(r, tmp_path):
+    from multiclaude.router.transcript import SETTLED_AFTER
+    old, newest, now = tmp_path / "old.jsonl", tmp_path / "newest.jsonl", time.time()
+    old.write_text('{"a": 1}\n{"b"')
+    os.utime(old, (now - SETTLED_AFTER - 60, now - SETTLED_AFTER - 60))
+    append(newest, {"c": 1})
+    tail = r.session.Tail(tmp_path)
+
+    assert sorted(map(str, tail.read_new(now))) == ["{'a': 1}", "{'c': 1}"]
+    tail.settle(now)
+
+    assert str(old) in tail.offsets
+
+
 def test_tail_skip_existing_reads_only_what_comes_after(r, tmp_path):
     path = tmp_path / "t.jsonl"
     append(path, {"old": 1})
@@ -251,6 +285,76 @@ def test_session_start_forgets_a_turn_that_went_quiet_long_ago(r, tmp_path):
     os.utime(proj / "a.jsonl", (old, old))
 
     assert not session(r, tmp_path).turn.busy
+
+
+REPLY = {"type": "assistant", "message": {"content": [{"type": "text", "text": "On it"}]}}
+TURN_END = {"type": "system", "subtype": "turn_duration"}
+TOOL_RESULT = {"type": "user", "message": {"content": [{"type": "tool_result", "content": "x" * 300}]}}
+
+
+def long_transcript(tmp_path, *entries):
+    """A person's transcript holding a long conversation before these entries."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    append(proj / "a.jsonl", *[REPLY, TURN_END] * 500, *entries)
+    return proj / "a.jsonl"
+
+
+def reads_of(r, monkeypatch):
+    """Where in a transcript each read started, as (offset, bytes to its end)."""
+    reads, read = [], r.session.Tail.read
+
+    def recording(tail, path):
+        reads.append((tail.offsets.get(path, 0), os.path.getsize(path) - tail.offsets.get(path, 0)))
+        return read(tail, path)
+
+    monkeypatch.setattr(r.session.Tail, "read", recording)
+    return reads
+
+
+def test_session_start_reads_only_the_end_of_a_long_transcript(r, tmp_path, monkeypatch):
+    from multiclaude.router import transcript
+    monkeypatch.setattr(transcript, "RECENT", 2000)
+    monkeypatch.setattr(r.session.Tail.recent, "__defaults__", (2000,))
+    path = long_transcript(tmp_path, REPLY)
+    reads = reads_of(r, monkeypatch)
+
+    s = session(r, tmp_path)
+
+    assert s.turn.in_turn and s.turn.busy
+    assert [size <= 2000 for _, size in reads] == [True]
+    assert s.tail.offsets == {str(path): path.stat().st_size} and s.tail.read_new() == []
+
+
+@pytest.mark.parametrize("before, in_turn", [(REPLY, True), (TURN_END, False)])
+def test_session_start_reads_back_to_the_turn_when_the_end_says_nothing_about_it(r, tmp_path, monkeypatch, before, in_turn):
+    """A turn that started before the part read: tool results alone don't say whether one runs."""
+    monkeypatch.setattr(r.session.Tail.recent, "__defaults__", (2000,))
+    path = long_transcript(tmp_path, before, *[TOOL_RESULT] * 40)
+    reads = reads_of(r, monkeypatch)
+
+    s = session(r, tmp_path)
+
+    assert s.turn.in_turn is in_turn
+    assert len(reads) > 1 and all(0 < offset for offset, _ in reads)  # further back each time, never from the top
+    assert reads[-1][1] < path.stat().st_size / 2
+
+
+def test_the_end_of_a_transcript_starts_at_a_line(r, tmp_path):
+    path = tmp_path / "t.jsonl"
+    append(path, *[{"n": n} for n in range(1, 10)])
+    line = len(json.dumps({"n": 9})) + 1
+    tail = r.session.Tail(tmp_path)
+
+    def last(window, telling=lambda entry: True):
+        return [entry["n"] for entry in tail.recent(str(path), telling, window)]
+
+    assert last(line) == [9]                # a line that starts where the part read does is kept
+    assert last(line + 1) == [9]            # one it cuts through is left out
+    assert last(line - 1) == [7, 8, 9]      # no line starts in it: four times as far back
+    assert last(line, lambda entry: entry["n"] == 7) == [6, 7, 8, 9]
+    assert last(line, lambda entry: False) == list(range(1, 10))
+    assert tail.recent(str(tmp_path / "gone.jsonl"), lambda entry: True) == []
 
 
 def test_session_read_reports_a_stuck_turn_and_saves_its_screen(r, tmp_path):
@@ -1141,6 +1245,30 @@ def test_a_front_desk_transcript_started_during_the_restart_is_read_from_the_top
     assert [w.body for w in after.users["alice"].queue] == ["in the new transcript"]
 
 
+def test_the_offsets_kept_for_a_restart_leave_out_front_desk_transcripts_gone_quiet(r, desk, monkeypatch):
+    """The front desk starts a new transcript every DESK_RESET_EVERY messages, and they are never deleted."""
+    from multiclaude.router.transcript import SETTLED_AFTER
+    quiet(r, desk, monkeypatch)
+    long_ago = time.time() - SETTLED_AFTER - 60
+    for n in range(3):
+        old = project(r, r.paths.ROOT) / f"old-{n}.jsonl"
+        append(old, channel("long ago", msg_id=str(n)))
+        os.utime(old, (long_ago, long_ago))
+    append(desk_transcript(r), channel("before", msg_id="10"))
+    desk.poll()
+    desk.users["alice"].queue.clear()
+    desk.desk.tail.next_settle = 0
+    desk.poll()
+    desk.save_desk_offsets(time.time() + r.desk.OFFSETS_HEARTBEAT)
+
+    assert list(read_json(r.desk.DESK_OFFSETS)["offsets"]) == [str(desk_transcript(r))]
+    append(desk_transcript(r), channel("during the restart", msg_id="11"))
+    after = restarted_desk(r, monkeypatch)
+    after.poll()
+
+    assert [w.body for w in after.users["alice"].queue] == ["during the restart"]  # and nothing from long ago again
+
+
 def test_after_a_long_outage_messages_from_the_gap_are_not_delivered_late(r, desk, monkeypatch):
     quiet(r, desk, monkeypatch)
     desk.poll()
@@ -1481,6 +1609,230 @@ def test_a_session_that_got_busy_meanwhile_is_not_restarted(r, desk, monkeypatch
     r.work.serve(alice, time.time())
 
     assert restarted == [] and alice.queue == [] and alice.upgrade_tried is None
+
+
+# --- asleep while idle -------------------------------------------------------------------------
+
+NO_SUCH_PID = 4_194_999  # above the kernel's highest pid, so nothing real is ever waited for or signalled
+
+
+def idle_for(r, monkeypatch, user, minutes):
+    """The person's assistant up for a day, with nothing running under it, and quiet this long."""
+    monkeypatch.setattr(user, "claude_proc", lambda: (NO_SUCH_PID, 86_400))
+    monkeypatch.setattr(r.session, "runs_commands", lambda pid: False)
+    user.turn.last_write = time.time() - minutes * 60
+
+
+def sleep_after(r, minutes):
+    write_json(r.paths.CONFIG, {"hibernate_after_minutes": minutes})
+
+
+def look_for_sleepers(r, desk):
+    desk.hibernator.tick(time.time() + r.hibernate.CHECK_EVERY, list(desk.users.values()))
+
+
+def tmux_calls(r, command):
+    return [args for args, _ in r.keystrokes if args[0] == command]
+
+
+def woken(monkeypatch):
+    """The `assistant …` commands the router runs to wake someone, recorded instead of run."""
+    commands = []
+    monkeypatch.setattr(subprocess, "run", lambda args, **kwargs: commands.append([Path(args[0]).name, *args[1:]])
+                        or subprocess.CompletedProcess(args, 0, b"", b""))
+    return commands
+
+
+def test_an_assistant_idle_long_enough_is_put_to_sleep_by_its_worker(r, desk, monkeypatch):
+    sleep_after(r, 30)
+    alice, bob = desk.users["alice"], desk.users["bob"]
+    idle_for(r, monkeypatch, alice, minutes=31)
+    idle_for(r, monkeypatch, bob, minutes=20)
+
+    look_for_sleepers(r, desk)
+    assert (kinds(alice), kinds(bob)) == (["Hibernate"], [])
+    r.work.serve(alice, time.time())
+
+    assert alice.asleep() and not bob.asleep() and alice.queue == []
+    assert ("send-keys", "-t", "=u-alice:", "-l", "/exit") in tmux_calls(r, "send-keys")  # claude exits as for an update
+    assert tmux_calls(r, "kill-session") == [("kill-session", "-t", "=u-alice")]  # and its run loop goes with the session
+    assert sent(r) == []  # nobody is told: their next message just takes a little longer
+
+
+def test_nobody_is_put_to_sleep_unless_the_owner_set_it(r, desk, monkeypatch):
+    idle_for(r, monkeypatch, desk.users["alice"], minutes=600)
+
+    look_for_sleepers(r, desk)
+    write_json(r.paths.CONFIG, {"hibernate_after_minutes": 0})
+    look_for_sleepers(r, desk)
+
+    assert desk.users["alice"].queue == []
+
+
+def working(r, alice, tmp_path):
+    alice.turn.busy = True
+
+
+def has_work_queued(r, alice, tmp_path):
+    alice.queue.append(r.work.Reload(time.time()))
+
+
+def signing_in(r, alice, tmp_path):
+    alice.pending_login = {"server": "srv", "inbox": queue.Queue()}
+
+
+def picking_up(r, alice, tmp_path):
+    from multiclaude.router.turn import Failure
+    alice.pickups.plan(Failure("API Error: Connection error.", retryable=True), time.time())
+
+
+def runs_in_the_background(r, alice, tmp_path):
+    from multiclaude import background
+    background.add("alice", os.getpid(), "an OpenCode run")
+
+
+def scheduled_in_claude_code(r, alice, tmp_path):
+    alice.scheduled = time.time() - 3600  # a CronCreate an hour ago, in the claude process that has run for a day
+
+
+def has_tasks_kept_by_claude_code(r, alice, tmp_path):
+    write_json(r.paths.workspace("alice") / ".claude" / "scheduled_tasks.json", {"tasks": [{"cron": "0 9 * * *"}]})
+
+
+@pytest.mark.parametrize("missed", [working, has_work_queued, signing_in, picking_up, runs_in_the_background,
+                                    scheduled_in_claude_code, has_tasks_kept_by_claude_code])
+def test_an_assistant_that_would_be_missed_stays_up(r, desk, monkeypatch, tmp_path, missed):
+    alice = desk.users["alice"]
+    idle_for(r, monkeypatch, alice, minutes=600)
+    assert alice.can_hibernate(time.time(), alice.claude_proc(), 1800)
+
+    missed(r, alice, tmp_path)
+
+    assert not alice.can_hibernate(time.time(), alice.claude_proc(), 1800)
+
+
+def test_an_assistant_is_not_put_to_sleep_with_a_command_running_or_right_after_it_started(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    idle_for(r, monkeypatch, alice, minutes=600)
+    monkeypatch.setattr(r.session, "runs_commands", lambda pid: True)  # a background task, a monitor
+    assert not alice.can_hibernate(time.time(), (NO_SUCH_PID, 86_400), 1800)
+    monkeypatch.setattr(r.session, "runs_commands", lambda pid: False)
+    assert not alice.can_hibernate(time.time(), (NO_SUCH_PID, r.session.YOUNGEST_RESTART - 1), 1800)
+
+
+def test_something_scheduled_before_claude_last_started_went_with_that_process(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    idle_for(r, monkeypatch, alice, minutes=600)
+    alice.scheduled = time.time() - 2 * 86_400
+
+    assert alice.can_hibernate(time.time(), alice.claude_proc(), 1800)
+
+
+def test_what_an_assistant_schedules_inside_claude_code_is_remembered_beyond_a_router_restart(r, desk):
+    alice = desk.users["alice"]
+    append(transcript(alice), {"type": "assistant", "timestamp": "2026-11-09T10:00:00.000Z", "message": {"content": [
+        {"type": "tool_use", "name": "CronCreate", "input": {"cron": "*/5 * * * *", "prompt": "check the build"}}]}})
+
+    alice.read(time.time())
+
+    at = 1794218400.0  # 2026-11-09 10:00 UTC
+    assert alice.scheduled == at
+    assert r.session.Session("alice", "u-alice", alice.tail.dir, ALICE_CHAT, "Alice").scheduled == at
+
+
+def test_an_assistant_that_got_busy_meanwhile_is_not_put_to_sleep(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    idle_for(r, monkeypatch, alice, minutes=600)
+    alice.queue = [r.work.Hibernate(time.time(), pid=NO_SUCH_PID, after=1800)]
+    alice.turn.last_write = time.time()
+
+    r.work.serve(alice, time.time())
+
+    assert alice.queue == [] and not alice.asleep() and tmux_calls(r, "kill-session") == []
+
+
+def test_a_message_wakes_a_sleeping_assistant_and_is_typed_once_its_switches_are_back(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    r.asleep.mark("alice")
+    commands, done = woken(monkeypatch), []
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    monkeypatch.setattr(alice, "switch", lambda setting, target: done.append(f"/{setting} {target}")
+                        or (f"Set {setting} to {target}", False))
+    monkeypatch.setattr(alice, "type_message", lambda header, body: done.append(body))
+    alice.session_switches = {"model": "sonnet"}
+
+    desk.inbound(channel("good morning"))
+    assert kinds(alice) == ["Deliver"] and alice.turn.busy  # "typing…" shows while it wakes
+    desk.workers["alice"].step(time.time())
+
+    assert commands == [["assistant", "wake", "alice"]] and not alice.asleep()
+    assert done == ["/model sonnet", "good morning"] and alice.queue == []
+    assert sent(r) == []
+
+
+def test_a_sleeping_assistant_sleeps_on_while_nothing_comes_for_it(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    r.asleep.mark("alice")
+    commands = woken(monkeypatch)
+    sleep_after(r, 30)
+
+    desk.workers["alice"].step(time.time())
+    look_for_sleepers(r, desk)
+    alice.ensure_started(time.time())  # as for someone else's message: `assistant start-users` leaves it be
+
+    assert alice.asleep() and alice.queue == []
+    assert [command[:2] for command in commands if "wake" in command] == []
+
+
+def test_a_sleeping_assistant_that_does_not_come_up_is_reported_like_any_that_is_not_running(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    r.asleep.mark("alice")
+    woken(monkeypatch)
+    monkeypatch.setattr(r.session, "WAKE_TIMEOUT", 0)
+    monkeypatch.setattr(alice, "ready", lambda: False)
+    monkeypatch.setattr(alice, "ensure_started", lambda now: None)
+    desk.inbound(channel("good morning"))
+
+    desk.workers["alice"].step(time.time())
+    assert kinds(alice) == ["Deliver"] and not alice.asleep()
+    desk.workers["alice"].step(time.time() + r.work.DELIVER_TIMEOUT + 1)
+
+    assert alice.queue == [] and "isn't running right now" in sent(r, ALICE_CHAT)[-1]
+
+
+def test_a_switch_that_cannot_be_put_back_after_waking_says_so(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    r.asleep.mark("alice")
+    woken(monkeypatch)
+    monkeypatch.setattr(alice, "ready", lambda: True)
+    monkeypatch.setattr(alice, "switch", lambda setting, target: ("the /model picker didn't open", False))
+    alice.session_switches = {"model": "sonnet"}
+    alice.queue = [r.work.Reload(time.time())]
+    monkeypatch.setattr(alice, "run_command", lambda command, timeout=30: "Reloaded: 3 plugins")
+
+    desk.workers["alice"].step(time.time())
+
+    assert sent(r, ALICE_CHAT)[0] == "⚠️ Claude woke up and couldn't switch its model back to sonnet: the /model picker didn't open"
+
+
+def test_restart_wakes_a_sleeping_assistant_with_a_new_conversation(r, desk, monkeypatch):
+    alice = desk.users["alice"]
+    r.asleep.mark("alice")
+    commands = woken(monkeypatch)
+    monkeypatch.setattr(alice, "ready", lambda: True)
+
+    assert alice.restart_fresh()
+
+    assert commands == [["assistant", "wake", "alice", "fresh"]] and not alice.asleep()
+    assert tmux_calls(r, "respawn-pane") == []
+
+
+def test_usage_says_that_the_assistant_is_asleep(r, desk):
+    r.asleep.mark("alice")
+
+    assert r.usage.usage_text(desk.users["alice"], desk.displays()) == (
+        "📊 No context data yet. It appears after my next reply.\n"
+        "💤 Claude is asleep while idle, and wakes up with your next message.")
 
 
 # --- one worker per session --------------------------------------------------------------------

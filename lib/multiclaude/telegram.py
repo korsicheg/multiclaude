@@ -1,5 +1,6 @@
-"""The Telegram Bot API, for the router and tg. Only the Telegram plugin in the front desk
-polls for updates; everything here only sends, so it never competes with it."""
+"""The Telegram Bot API, for the router and tg. Everything here only sends, so it never competes
+with whoever polls for updates: the Telegram plugin in the front desk, or the router itself
+(router/telegram_entrance.py), which makes its own getUpdates calls with a BotApi."""
 import errno
 import functools
 import http.client

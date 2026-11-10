@@ -31,7 +31,10 @@ def machine_lines(sample):
                                         f"{size(disk['total_mb'])} used, {size(disk['free_mb'])} free")
               for disk in sample["disks"]),
             ("Router", running(sample["router"])),
-            *((f"{session['display']}'s assistant", running(session["running"])) for session in sample["sessions"])]
+            *([("Telegram", "heard by the router" if sample["telegram"] else "NOT heard by the router")]
+              if "telegram" in sample else []),
+            *((f"{session['display']}'s assistant", "asleep" if session.get("asleep") else running(session["running"]))
+              for session in sample["sessions"])]
     when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(sample["time"]))
     return [f"The machine at {when}, up {duration(sample['uptime'])}",
             *(f"  {label:<{LABEL_WIDTH}}{value}" for label, value in rows)]

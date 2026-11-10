@@ -3,6 +3,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 
 from multiclaude import bot
 from multiclaude.log import log
@@ -14,6 +15,9 @@ ERROR_TEXT_MAX = 300
 # Claude Code's kinds of API error that trying again unchanged won't fix: a login, billing or
 # plan limit problem, or a request the API refuses.
 LASTING_ERRORS = {"authentication_failed", "billing_error", "invalid_request", "rate_limit"}
+# The tools that schedule something inside Claude Code (CronCreate, and /loop's own wake-ups),
+# which only that claude process carries out.
+SCHEDULING_TOOLS = ("CronCreate", "ScheduleWakeup")
 
 
 @dataclass
@@ -37,6 +41,22 @@ def interrupted(entry):
     return any(isinstance(b, dict) and str(b.get("text") or "").startswith(INTERRUPTED_MARKER) for b in blocks)
 
 
+def written_at(entry):
+    """When Claude Code wrote an entry (its "timestamp"); now when it doesn't say."""
+    try:
+        return datetime.fromisoformat(str(entry.get("timestamp")).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return time.time()
+
+
+def telling(entry):
+    """Whether an entry says something about a turn: one Turn.handle acts on. Starting up, a
+    session's transcript is read back to the latest of these (Tail.recent)."""
+    kind = entry.get("type")
+    return (kind in ("queue-operation", "assistant") or kind == "system" and entry.get("subtype") == "turn_duration"
+            or kind == "user" and (bool(entry.get("queueTranscriptOnly")) or interrupted(entry)))
+
+
 class Turn:
     """One session's work: busy from a queued message until the turn that handles it ends."""
 
@@ -51,6 +71,7 @@ class Turn:
         self.failed = None       # a Failure the desk hasn't dealt with yet (recovery.py)
         self.model = None        # the model of its latest reply (the model-fallback add-in reads it)
         self.stalled = False     # judged stuck, and nothing written since: a dialog may still open
+        self.scheduled = 0.0     # when it last scheduled something inside Claude Code (SCHEDULING_TOOLS)
 
     def end(self):
         self.busy = self.in_turn = False
@@ -97,9 +118,12 @@ class Turn:
         if model.startswith("claude-"):  # not Claude Code's own "<synthetic>" notes
             self.model = model
         for block in content:
-            if (isinstance(block, dict) and block.get("type") == "tool_use"
-                    and REPLY_RE.search(json.dumps(block.get("input") or {}))):
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            if REPLY_RE.search(json.dumps(block.get("input") or {})):
                 self.last_reply = time.time()
+            if block.get("name") in SCHEDULING_TOOLS:
+                self.scheduled = written_at(entry)
 
     def postpone_stuck(self, now):
         """Judge it stuck no sooner than STALE_AFTER from now. While the VM is offline a turn is

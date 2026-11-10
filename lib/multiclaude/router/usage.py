@@ -7,7 +7,7 @@ import re
 import subprocess
 import time
 
-from multiclaude import jsonfile, paths
+from multiclaude import bot, jsonfile, paths
 from multiclaude.log import log
 
 # The status line saves each session's latest payload here (system/statusline.sh).
@@ -164,6 +164,8 @@ def usage_text(session, displays):
     except Exception as e:  # a fun extra must never cost the rest of /usage
         log(f"spending total failed: {e!r}")
         spent = []
+    if session.asleep():
+        plan = [f"💤 {bot.name()} is asleep while idle, and wakes up with your next message."] + plan
     if not snap:
         return "\n".join(["📊 No context data yet. It appears after my next reply."] + plan + spent)
     used, size, pct = context(snap)

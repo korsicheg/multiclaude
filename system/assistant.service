@@ -1,5 +1,5 @@
 [Unit]
-Description=multiclaude front desk: the Claude Code session that hosts the Telegram bot
+Description=multiclaude: the tmux server of the front desk, which hosts the Telegram bot, and of everyone's assistants
 After=network-online.target
 Wants=network-online.target
 

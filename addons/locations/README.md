@@ -4,7 +4,7 @@ A location or place a person shares on Telegram reaches their assistant, listed 
 
 The [OwnTracks](https://owntracks.org) app can keep the same file up to date from a person's phone, without signing in to Apple or Google from the machine. It posts each position to the relay with the person's OwnTracks key; the relay passes on only the key's SHA-256, and the machine keeps only those hashes (`state/owntracks-keys.json`) and turns an unknown one away, which the app shows as a 401. An OwnTracks position adds `source` "owntracks", and, when the app sends them, `velocity_kmh`, `battery`, `regions` (the app's regions the phone is in) and `trigger`; entering or leaving a region also gives `event` (`enter` or `leave`) and `region`. Whichever is newer, an OwnTracks position or a Telegram live location, is the one kept.
 
-The Telegram plugin drops locations, so `bin/patch-telegram-plugin` adds handlers for them while this add-in is on, and takes them out again when it's turned off.
+The Telegram plugin drops locations, so `bin/patch-telegram-plugin` adds handlers for them while this add-in is on, and takes them out again when it's turned off. Where the router polls Telegram itself (`"frontdesk": "router"`), the add-in takes them in directly.
 
 ## What it needs
 

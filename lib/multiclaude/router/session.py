@@ -5,12 +5,12 @@ import subprocess
 import threading
 import time
 
-from multiclaude import bot, paths, tmux
+from multiclaude import asleep, background, bot, jsonfile, paths, tmux
 from multiclaude.channels import TelegramChat
 from multiclaude.log import log
 from multiclaude.router import claude_ui, recovery
 from multiclaude.router.transcript import CLEAR_MARKER, INTERRUPTED_MARKER, Tail
-from multiclaude.router.turn import STALE_AFTER, Turn
+from multiclaude.router.turn import STALE_AFTER, Turn, telling
 
 POLL = 0.5
 READY_AFTER = 8           # seconds a freshly started claude gets before anything is typed into it
@@ -29,6 +29,7 @@ SWITCH_TIMEOUT = 15       # for Claude Code to confirm a switch
 EXIT_TIMEOUT = 20         # for /exit to end claude before it's sent SIGTERM
 KILL_TIMEOUT = 10         # for SIGTERM to end claude before it's sent SIGKILL (/restart)
 COME_BACK_TIMEOUT = 60    # for run-user.sh to start claude again after /restart ended it
+WAKE_TIMEOUT = 180        # for a sleeping assistant to come up with its conversation loaded
 UPGRADE_QUIET = 5 * 60    # a session must have been quiet this long before it's restarted onto a new version
 # run-user.sh drops the conversation when claude exits within 30s of starting, so a younger
 # process is never restarted.
@@ -64,31 +65,35 @@ class Session:
         self.stop_requested = False    # /stop came; the worker presses Escape (work.stop)
         self.restart_requested = False  # /restart came; the worker starts it over (work.restart_fresh)
         self.pickups = recovery.Pickups()  # requests its turns dropped on an API error, to pick up again
+        self.scheduled = kept_time(paths.SESSION_TASKS / name)  # when it last scheduled something inside Claude Code
         self.recover()
 
     def recover(self):
-        """Pick up the live session's state from its newest transcript, without acting on old entries:
-        their notices are dropped, and add-ins never see them (on_transcript_entry)."""
+        """Pick up the live session's state from the end of its newest transcript, as far back as
+        the latest entry that says something about a turn (Tail.recent), without acting on old
+        entries: their notices are dropped, and add-ins never see them (on_transcript_entry)."""
         newest = self.tail.newest()
         if newest:
-            for entry in self.tail.read(newest):
+            for entry in self.tail.recent(newest, telling):
                 self.turn.handle(entry)
             self.turn.last_write = os.path.getmtime(newest)
             if time.time() - self.turn.last_write > STALE_AFTER:
                 self.turn.end()  # a turn that ended badly before the router started
         self.turn.notice = self.turn.failed = None  # handled (or not) back then
         self.tail.skip_existing()
+        self.keep_scheduled()
 
     def read(self, now, on_entry=None):
         """Follow the transcripts; the new entries. on_entry(entry), if given, sees each one before
         the turn does."""
-        entries = self.tail.read_new()
+        entries = self.tail.read_new(now)
         if entries:
             self.turn.last_write = now
         for entry in entries:
             if on_entry:
                 on_entry(entry)
             self.turn.handle(entry)
+        self.keep_scheduled()
         if self.approval:
             self.turn.postpone_stuck(now)  # it waits for the person's tap, not stuck
         if self.turn.stuck(now, self.tail.latest_subagent_write):
@@ -174,6 +179,77 @@ class Session:
             return False
         return now - max(self.turn.last_write, self.tail.latest_subagent_write()) >= UPGRADE_QUIET
 
+    # --- asleep while idle (asleep.py, router/hibernate.py) ---
+
+    def asleep(self):
+        return asleep.marked(self.name)
+
+    def keep_scheduled(self):
+        """Remember when the session last scheduled something inside Claude Code beyond a restart
+        of the router, which reads only the end of a long transcript again."""
+        if self.turn.scheduled <= self.scheduled:
+            return
+        self.scheduled = self.turn.scheduled
+        try:
+            paths.SESSION_TASKS.mkdir(parents=True, exist_ok=True)
+            (paths.SESSION_TASKS / self.name).write_text(f"{self.scheduled}\n")
+        except OSError as e:
+            log(f"{self.name}: can't keep when it scheduled something: {e}")
+
+    def schedules_inside(self, now, running_for):
+        """Whether something may be scheduled inside its Claude Code, which only a running
+        session carries out: a CronCreate or /loop since this claude process started, or tasks
+        Claude Code keeps for the folder (.claude/scheduled_tasks.json)."""
+        if self.scheduled >= now - running_for:
+            return True
+        kept = jsonfile.read_json(paths.workspace(self.name) / ".claude" / "scheduled_tasks.json")
+        return bool(kept.get("tasks") if isinstance(kept, dict) else kept)
+
+    def can_hibernate(self, now, proc, after):
+        """True when nobody would miss the session: idle as for an update restart (can_upgrade)
+        and quiet for `after` seconds, no sign-in, approval or pick-up waiting, no program of
+        its own listed as running in the background (`assistant background`), and nothing
+        scheduled inside Claude Code."""
+        if not self.can_upgrade(now, proc) or self.pending_login or self.approval or self.pickups.waiting:
+            return False
+        if now - max(self.turn.last_write, self.tail.latest_subagent_write()) < after:
+            return False
+        return not (background.still_running(self.name) or self.schedules_inside(now, proc[1]))
+
+    def hibernate(self, pid):
+        """Put the session to sleep: exit claude as for an update restart, mark it asleep, so
+        `assistant start-users` leaves it be, and end its tmux session, run loop and all, before
+        that loop starts claude again (it waits 5 seconds). Whether it went."""
+        self.restart(pid)
+        asleep.mark(self.name)
+        try:
+            self.pane.kill()
+        except (subprocess.SubprocessError, OSError) as e:
+            asleep.unmark(self.name)
+            log(f"{self.name}: can't end its tmux session, so it stays up: {e}")
+            return False
+        return True
+
+    def wake_up(self, fresh=False):
+        """Start a sleeping session again (`assistant wake`), with a new conversation if fresh,
+        and wait until claude is up with its conversation loaded: its message box on screen.
+        Whether it came up; either way it no longer counts as asleep."""
+        self.pid = None
+        try:
+            subprocess.run([str(paths.BIN / "assistant"), "wake", self.name, *(["fresh"] if fresh else [])],
+                           capture_output=True, timeout=START_TIMEOUT)
+        except (subprocess.SubprocessError, OSError) as e:
+            log(f"{self.name}: can't wake it: {e}")
+        asleep.unmark(self.name)
+        deadline = time.time() + WAKE_TIMEOUT
+        while time.time() < deadline:
+            if self.ready() and self.message_box_shown():
+                self.turn.last_write = time.time()  # awake from now: no sooner asleep again, or judged stuck
+                return True
+            time.sleep(POLL)
+        log(f"{self.name}: it didn't come up within {WAKE_TIMEOUT}s of waking it")
+        return False
+
     def restart(self, pid):
         """Exit claude with /exit (SIGTERM if that doesn't work); its run loop starts it again,
         and a person's assistant resumes its conversation with --continue."""
@@ -198,7 +274,12 @@ class Session:
     def restart_fresh(self):
         """/restart: end claude at once, mid-turn or stuck alike, then replace its run loop with
         a new one (the run-user.sh on disk now) that starts claude with a new conversation.
-        Whether a new claude came up."""
+        A sleeping session is woken with one. Whether a new claude came up."""
+        if self.asleep():
+            log(f"{self.name}: /restart; waking it with a new conversation")
+            self.approval = None
+            self.turn.reset()
+            return self.wake_up(fresh=True)
         old = self.claude_proc()
         self.pid, self.approval = None, None  # its dialog goes with it
         self.turn.reset()
@@ -391,6 +472,14 @@ class Session:
             time.sleep(POLL)
         self.pane.press("Escape")
         return "Claude Code didn't confirm the switch", warned
+
+
+def kept_time(path):
+    """The time kept in a state file, 0 when there is none."""
+    try:
+        return float(path.read_text())
+    except (OSError, ValueError):
+        return 0.0
 
 
 class DialogOpen(Exception):
